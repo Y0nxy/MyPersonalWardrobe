@@ -21,10 +21,14 @@ namespace MyPersonalWardrobe
 
         private GameObject menuParent;
         private Image[] buttonBorders = new Image[6];
+        private Image[] maskImages = new Image[6];
         private RawImage[] portraitImages = new RawImage[6];
         private RenderTexture[] savedTextures = new RenderTexture[6];
         private int selectedLoadout = 0;
-        private Sprite roundedUISprite;
+
+        private Sprite cardSprite;
+        private Sprite maskSprite;
+        private const int CornerRadius = 26;
 
         // Player Stealer UI Elements
         private GameObject playerListPanel;
@@ -41,11 +45,16 @@ namespace MyPersonalWardrobe
             public int outfit;
             public int hat;
             public int sash;
+            // Changed to match runtime array representation cleanly
+            public bool[] badgeData = new bool[0];
             public bool hasData;
         }
 
         private OutfitPreset[] savedPresets = new OutfitPreset[6];
         private ConfigEntry<string> savedPresetsConfig;
+
+        private ConfigEntry<KeyCode> toggleKeyConfig;
+        private ConfigEntry<bool> copyBadgesConfig;
 
         private Color activeColor = new Color(0.6f, 1f, 0.6f);
         private Color inactiveColor = new Color(0.9f, 0.88f, 0.82f);
@@ -62,17 +71,22 @@ namespace MyPersonalWardrobe
                 savedPresets[i] = new OutfitPreset();
             }
 
+            toggleKeyConfig = Config.Bind("General", "MenuToggleKey", KeyCode.F9, "Keybind to open the wardrobe menu.");
+            copyBadgesConfig = Config.Bind("General", "CopyBadges", true, "Whether to steal badge status when cloning an outfit.");
+
             savedPresetsConfig = Config.Bind("General", "SavedPresetsDataList", "", "Flat list representation containing saved outfit presets data.");
             LoadPresetsFromConfig();
+
+            cardSprite = GenerateProceduralRoundedSprite(256, 256, CornerRadius);
+            maskSprite = GenerateProceduralRoundedSprite(256, 256, CornerRadius);
         }
 
         private void Update()
         {
-            if (Input.GetKeyDown(KeyCode.F9))
+            if (Input.GetKeyDown(toggleKeyConfig.Value))
             {
                 if (menuParent == null)
                 {
-                    FetchGameUIAssets();
                     CreateWardrobeUI();
                     ToggleMenuState(true);
                 }
@@ -111,15 +125,53 @@ namespace MyPersonalWardrobe
             }
         }
 
-        private void FetchGameUIAssets()
+        private Sprite GenerateProceduralRoundedSprite(int width, int height, int radius)
         {
-            if (PassportManager.instance != null)
+            if (radius <= 0) radius = 1;
+
+            Texture2D texture = new Texture2D(width, height, TextureFormat.RGBA32, false);
+            texture.filterMode = FilterMode.Bilinear;
+            texture.wrapMode = TextureWrapMode.Clamp;
+
+            Color[] colors = new Color[width * height];
+
+            for (int y = 0; y < height; y++)
             {
-                Image passportImg = PassportManager.instance.GetComponentInChildren<Image>(true);
-                if (passportImg != null && passportImg.sprite != null)
+                for (int x = 0; x < width; x++)
                 {
-                    roundedUISprite = passportImg.sprite;
+                    float alpha = 1f;
+                    Vector2 pixelPos = new Vector2(x + 0.5f, y + 0.5f);
+                    Vector2 center = Vector2.zero;
+                    bool isCorner = false;
+
+                    if (x < radius && y < radius) { isCorner = true; center = new Vector2(radius, radius); }
+                    else if (x >= width - radius && y < radius) { isCorner = true; center = new Vector2(width - radius, radius); }
+                    else if (x < radius && y >= height - radius) { isCorner = true; center = new Vector2(radius, height - radius); }
+                    else if (x >= width - radius && y >= height - radius) { isCorner = true; center = new Vector2(width - radius, height - radius); }
+
+                    if (isCorner)
+                    {
+                        float dist = Vector2.Distance(pixelPos, center);
+                        alpha = Mathf.Clamp01(radius - dist + 0.5f);
+                    }
+
+                    colors[y * width + x] = new Color(1f, 1f, 1f, alpha);
                 }
+            }
+
+            texture.SetPixels(colors);
+            texture.Apply();
+
+            Vector4 borders = new Vector4(radius, radius, radius, radius);
+            return Sprite.Create(texture, new Rect(0, 0, width, height), new Vector2(0.5f, 0.5f), 100f, 0, SpriteMeshType.FullRect, borders);
+        }
+
+        private void SetUILayerRecursive(GameObject obj, int layer)
+        {
+            obj.layer = layer;
+            foreach (Transform child in obj.transform)
+            {
+                SetUILayerRecursive(child.gameObject, layer);
             }
         }
 
@@ -128,12 +180,13 @@ namespace MyPersonalWardrobe
             GameObject canvasObj = new GameObject("WardrobeCanvas");
             Canvas canvas = canvasObj.AddComponent<Canvas>();
             canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-            canvas.sortingOrder = 999;
+            canvas.sortingOrder = 9999;
 
             canvasObj.AddComponent<CanvasScaler>();
             canvasObj.AddComponent<GraphicRaycaster>();
 
-            if (FindFirstObjectByType<UnityEngine.EventSystems.EventSystem>() == null)
+            // Fixed FindFirstObjectByType call compatibility
+            if (Object.FindFirstObjectByType<UnityEngine.EventSystems.EventSystem>() == null)
             {
                 GameObject eventSystem = new GameObject("EventSystem");
                 eventSystem.AddComponent<UnityEngine.EventSystems.EventSystem>();
@@ -168,7 +221,7 @@ namespace MyPersonalWardrobe
             titleRect.sizeDelta = new Vector2(1000, 50);
 
             float[] xPositions = { -320f, 0f, 320f };
-            float[] yPositions = { 200f, -160f };
+            float[] yPositions = { 180f, -140f };
 
             int index = 0;
             for (int row = 0; row < 2; row++)
@@ -180,10 +233,9 @@ namespace MyPersonalWardrobe
                 }
             }
 
-            // Generate Player List Sub-Menu Overlay
             CreatePlayerSelectionMenu(canvasObj.transform);
-
             UpdateBorders();
+            SetUILayerRecursive(canvasObj, 5);
         }
 
         private void CreateLoadoutCard(Transform parent, float xPos, float yPos, int index)
@@ -198,14 +250,13 @@ namespace MyPersonalWardrobe
             borderImg.color = inactiveColor;
             borderImg.raycastTarget = true;
 
-            if (roundedUISprite != null)
+            if (cardSprite != null)
             {
-                borderImg.sprite = roundedUISprite;
+                borderImg.sprite = cardSprite;
                 borderImg.type = Image.Type.Sliced;
             }
             buttonBorders[index] = borderImg;
 
-            // Custom Pointer Click Event Handler to properly separate left-click and right-click behaviors
             CustomClickHandler clickHandler = cardObj.AddComponent<CustomClickHandler>();
             clickHandler.OnLeftClick += () => {
                 selectedLoadout = index;
@@ -228,18 +279,35 @@ namespace MyPersonalWardrobe
                 OpenPlayerSelectionMenu(index);
             };
 
+            GameObject maskObj = new GameObject("PortraitMask");
+            RectTransform maskRect = maskObj.AddComponent<RectTransform>();
+            maskRect.SetParent(cardObj.transform, false);
+
+            maskRect.anchorMin = new Vector2(0.06f, 0.06f);
+            maskRect.anchorMax = new Vector2(0.94f, 0.94f);
+            maskRect.sizeDelta = Vector2.zero;
+
+            Image maskImg = maskObj.AddComponent<Image>();
+            maskImg.raycastTarget = false;
+            if (maskSprite != null)
+            {
+                maskImg.sprite = maskSprite;
+                maskImg.type = Image.Type.Sliced;
+            }
+            maskImages[index] = maskImg;
+
+            Mask uiMask = maskObj.AddComponent<Mask>();
+            uiMask.showMaskGraphic = false;
+
             GameObject innerImgObj = new GameObject("PortraitView");
             RectTransform innerRect = innerImgObj.AddComponent<RectTransform>();
-            innerRect.SetParent(cardObj.transform, false);
+            innerRect.SetParent(maskObj.transform, false);
+            StretchToFill(innerRect);
 
             RawImage rawImg = innerImgObj.AddComponent<RawImage>();
-            rawImg.color = new Color(0.2f, 0.2f, 0.2f, 1f);
+            rawImg.color = new Color(0.15f, 0.15f, 0.15f, 1f);
             rawImg.raycastTarget = false;
             portraitImages[index] = rawImg;
-
-            innerRect.anchorMin = new Vector2(0.05f, 0.05f);
-            innerRect.anchorMax = new Vector2(0.95f, 0.95f);
-            innerRect.sizeDelta = Vector2.zero;
 
             savedTextures[index] = new RenderTexture(220, 240, 16);
 
@@ -248,9 +316,9 @@ namespace MyPersonalWardrobe
             labelRect.SetParent(cardObj.transform, false);
 
             TextMeshProUGUI labelText = labelObj.AddComponent<TextMeshProUGUI>();
-            labelText.text = $"Slot {index + 1}\n<size=12>(Shift+LClick Save | RClick Steal)</size>";
+            labelText.text = $"Slot {index + 1}\n<size=11>(Shift+LClick Save | RClick Steal)</size>";
             labelText.alignment = TextAlignmentOptions.Center;
-            labelText.fontSize = 16;
+            labelText.fontSize = 15;
             labelText.color = Color.white;
 
             labelRect.anchoredPosition = new Vector2(0, -145);
@@ -263,17 +331,17 @@ namespace MyPersonalWardrobe
             RectTransform mainRect = playerListPanel.AddComponent<RectTransform>();
             mainRect.SetParent(parent, false);
             mainRect.sizeDelta = new Vector2(350, 500);
-            mainRect.anchoredPosition = Vector2.zero; // Centers panel overlay on screen
+            mainRect.anchoredPosition = Vector2.zero;
 
             Image bg = playerListPanel.AddComponent<Image>();
-            bg.color = new Color(0.12f, 0.12f, 0.12f, 0.95f);
-            if (roundedUISprite != null)
+            bg.color = new Color(0.12f, 0.12f, 0.12f, 0.98f);
+            bg.raycastTarget = true;
+            if (cardSprite != null)
             {
-                bg.sprite = roundedUISprite;
+                bg.sprite = cardSprite;
                 bg.type = Image.Type.Sliced;
             }
 
-            // Header Title
             GameObject headerObj = new GameObject("Header");
             RectTransform headerRect = headerObj.AddComponent<RectTransform>();
             headerRect.SetParent(playerListPanel.transform, false);
@@ -287,7 +355,6 @@ namespace MyPersonalWardrobe
             headerTxt.alignment = TextAlignmentOptions.Center;
             headerTxt.color = Color.yellow;
 
-            // Scroll View Setup
             GameObject scrollObj = new GameObject("ScrollView");
             RectTransform scrollRect = scrollObj.AddComponent<RectTransform>();
             scrollRect.SetParent(playerListPanel.transform, false);
@@ -297,7 +364,6 @@ namespace MyPersonalWardrobe
             ScrollRect scrollRectComp = scrollObj.AddComponent<ScrollRect>();
             scrollObj.AddComponent<RectMask2D>();
 
-            // Content Holder
             GameObject contentObj = new GameObject("Content");
             RectTransform contentRect = contentObj.AddComponent<RectTransform>();
             contentRect.SetParent(scrollObj.transform, false);
@@ -320,16 +386,17 @@ namespace MyPersonalWardrobe
             scrollRectComp.vertical = true;
             playerListContent = contentRect.transform;
 
-            // Close Button
             GameObject closeBtnObj = new GameObject("CloseButton");
             RectTransform closeRect = closeBtnObj.AddComponent<RectTransform>();
+            closeBtnObj.layer = 5;
             closeRect.SetParent(playerListPanel.transform, false);
             closeRect.anchoredPosition = new Vector2(145, 225);
             closeRect.sizeDelta = new Vector2(30, 30);
 
             Image closeImg = closeBtnObj.AddComponent<Image>();
             closeImg.color = new Color(0.8f, 0.3f, 0.3f);
-            if (roundedUISprite != null) { closeImg.sprite = roundedUISprite; closeImg.type = Image.Type.Sliced; }
+            closeImg.raycastTarget = true;
+            if (cardSprite != null) { closeImg.sprite = cardSprite; closeImg.type = Image.Type.Sliced; }
 
             Button closeBtn = closeBtnObj.AddComponent<Button>();
             closeBtn.onClick.AddListener(() => playerListPanel.SetActive(false));
@@ -351,7 +418,6 @@ namespace MyPersonalWardrobe
         {
             slotTargetForSteal = targetSlot;
 
-            // Wipe pre-existing player buttons inside overlay contents
             foreach (Transform child in playerListContent)
             {
                 Destroy(child.gameObject);
@@ -363,7 +429,6 @@ namespace MyPersonalWardrobe
                 return;
             }
 
-            // Explicitly use Photon.Realtime.Player to avoid ambiguity
             foreach (Photon.Realtime.Player player in PhotonNetwork.PlayerList)
             {
                 Photon.Realtime.Player targetPlayer = player;
@@ -374,9 +439,10 @@ namespace MyPersonalWardrobe
 
                 Image btnImg = btnObj.AddComponent<Image>();
                 btnImg.color = new Color(0.25f, 0.25f, 0.25f, 1f);
-                if (roundedUISprite != null)
+                btnImg.raycastTarget = true;
+                if (cardSprite != null)
                 {
-                    btnImg.sprite = roundedUISprite;
+                    btnImg.sprite = cardSprite;
                     btnImg.type = Image.Type.Sliced;
                 }
 
@@ -388,6 +454,7 @@ namespace MyPersonalWardrobe
 
                 GameObject textObj = new GameObject("Text");
                 RectTransform textRect = textObj.AddComponent<RectTransform>();
+                textObj.layer = 5;
                 textRect.SetParent(btnObj.transform, false);
                 StretchToFill(textRect);
 
@@ -398,7 +465,23 @@ namespace MyPersonalWardrobe
                 btnText.color = Color.white;
             }
 
+            SetUILayerRecursive(playerListPanel, 5);
             playerListPanel.SetActive(true);
+        }
+
+        // Helper method to resolve simulation Character script from a Photon Player
+        private Character GetCharacterFromPlayer(Photon.Realtime.Player player)
+        {
+            if (player == null) return null;
+            // Fixed: Added FindObjectsSortMode argument required by modern Unity API versions
+            foreach (Character character in Object.FindObjectsByType<Character>(FindObjectsSortMode.None))
+            {
+                if (character.photonView != null && character.photonView.Owner == player)
+                {
+                    return character;
+                }
+            }
+            return null;
         }
 
         private void StealOutfitFromPlayer(Photon.Realtime.Player targetPlayer, int slotIndex)
@@ -417,6 +500,16 @@ namespace MyPersonalWardrobe
             savedPresets[slotIndex].outfit = playerData.customizationData.currentOutfit;
             savedPresets[slotIndex].hat = playerData.customizationData.currentHat;
             savedPresets[slotIndex].sash = playerData.customizationData.currentSash;
+
+            // Fixed: Appropriately assigned the bool[] badge data array directly
+            savedPresets[slotIndex].badgeData = new bool[0];
+
+            Character targetChar = GetCharacterFromPlayer(targetPlayer);
+            if (targetChar != null && targetChar.data != null)
+            {
+                savedPresets[slotIndex].badgeData = targetChar.data.badgeStatus;
+            }
+
             savedPresets[slotIndex].hasData = true;
 
             SavePresetsToConfig();
@@ -440,6 +533,14 @@ namespace MyPersonalWardrobe
             savedPresets[index].outfit = playerData.customizationData.currentOutfit;
             savedPresets[index].hat = playerData.customizationData.currentHat;
             savedPresets[index].sash = playerData.customizationData.currentSash;
+
+            // Fixed: Captured the bool[] array directly from local state safely
+            savedPresets[index].badgeData = new bool[0];
+            if (Character.localCharacter != null && Character.localCharacter.data != null)
+            {
+                savedPresets[index].badgeData = Character.localCharacter.data.badgeStatus;
+            }
+
             savedPresets[index].hasData = true;
 
             SavePresetsToConfig();
@@ -462,6 +563,12 @@ namespace MyPersonalWardrobe
             CharacterCustomization.SetCharacterOutfit(preset.outfit);
             CharacterCustomization.SetCharacterHat(preset.hat);
             CharacterCustomization.SetCharacterSash(preset.sash);
+
+            // Fixed: Relayed the underlying raw data array into the RPC sync target
+            if (copyBadgesConfig.Value && Character.localCharacter != null && Character.localCharacter.photonView != null && preset.badgeData != null && preset.badgeData.Length > 0)
+            {
+                Character.localCharacter.photonView.RPC("SyncBadgeStatus", RpcTarget.All, new object[] { preset.badgeData });
+            }
 
             if (PassportManager.instance != null && PassportManager.instance.dummy != null && PassportManager.instance.dummy.gameObject.activeInHierarchy)
             {
@@ -641,7 +748,10 @@ namespace MyPersonalWardrobe
             for (int i = 0; i < 6; i++)
             {
                 OutfitPreset p = savedPresets[i];
-                builder.Append($"{p.skin},{p.eyes},{p.mouth},{p.accessory},{p.outfit},{p.hat},{p.sash},{(p.hasData ? 1 : 0)}");
+                // Simply flattening array to a binary string representation for basic serialization
+                string flatBadges = p.badgeData != null ? string.Join("-", System.Array.ConvertAll(p.badgeData, b => b ? "1" : "0")) : "0";
+
+                builder.Append($"{p.skin},{p.eyes},{p.mouth},{p.accessory},{p.outfit},{p.hat},{p.sash},{flatBadges},{(p.hasData ? 1 : 0)}");
                 if (i < 5) builder.Append(";");
             }
 
@@ -660,7 +770,7 @@ namespace MyPersonalWardrobe
                 for (int i = 0; i < Mathf.Min(6, cards.Length); i++)
                 {
                     string[] properties = cards[i].Split(',');
-                    if (properties.Length >= 8)
+                    if (properties.Length >= 9)
                     {
                         savedPresets[i].skin = int.Parse(properties[0]);
                         savedPresets[i].eyes = int.Parse(properties[1]);
@@ -669,6 +779,22 @@ namespace MyPersonalWardrobe
                         savedPresets[i].outfit = int.Parse(properties[4]);
                         savedPresets[i].hat = int.Parse(properties[5]);
                         savedPresets[i].sash = int.Parse(properties[6]);
+
+                        string[] badgeBits = properties[7].Split('-');
+                        savedPresets[i].badgeData = System.Array.ConvertAll(badgeBits, bit => bit == "1");
+
+                        savedPresets[i].hasData = int.Parse(properties[8]) == 1;
+                    }
+                    else if (properties.Length >= 8)
+                    {
+                        savedPresets[i].skin = int.Parse(properties[0]);
+                        savedPresets[i].eyes = int.Parse(properties[1]);
+                        savedPresets[i].mouth = int.Parse(properties[2]);
+                        savedPresets[i].accessory = int.Parse(properties[3]);
+                        savedPresets[i].outfit = int.Parse(properties[4]);
+                        savedPresets[i].hat = int.Parse(properties[5]);
+                        savedPresets[i].sash = int.Parse(properties[6]);
+                        savedPresets[i].badgeData = new bool[0];
                         savedPresets[i].hasData = int.Parse(properties[7]) == 1;
                     }
                 }
@@ -680,7 +806,6 @@ namespace MyPersonalWardrobe
         }
     }
 
-    // Helper Monobehaviour to cleanly listen for left and right mouse clicks independently
     public class CustomClickHandler : MonoBehaviour, IPointerClickHandler
     {
         public System.Action OnLeftClick;
