@@ -5,9 +5,11 @@ using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using Photon.Pun;
+using Photon.Realtime;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
+using UnityEngine.EventSystems;
 using Zorro.Core;
 
 namespace MyPersonalWardrobe
@@ -24,6 +26,11 @@ namespace MyPersonalWardrobe
         private int selectedLoadout = 0;
         private Sprite roundedUISprite;
 
+        // Player Stealer UI Elements
+        private GameObject playerListPanel;
+        private Transform playerListContent;
+        private int slotTargetForSteal = -1;
+
         [System.Serializable]
         public class OutfitPreset
         {
@@ -38,8 +45,6 @@ namespace MyPersonalWardrobe
         }
 
         private OutfitPreset[] savedPresets = new OutfitPreset[6];
-
-        // Config entry rewritten as a regular string configuration list format
         private ConfigEntry<string> savedPresetsConfig;
 
         private Color activeColor = new Color(0.6f, 1f, 0.6f);
@@ -102,6 +107,7 @@ namespace MyPersonalWardrobe
                 Cursor.lockState = CursorLockMode.Locked;
                 Cursor.visible = false;
                 DestroyRenderRig();
+                if (playerListPanel != null) playerListPanel.SetActive(false);
             }
         }
 
@@ -152,14 +158,14 @@ namespace MyPersonalWardrobe
             titleRect.SetParent(canvasObj.transform, false);
 
             TextMeshProUGUI titleText = titleObj.AddComponent<TextMeshProUGUI>();
-            titleText.text = "WARDROBE PRESETS - CLICK TO EQUIP / SAVE";
+            titleText.text = "WARDROBE PRESETS - LEFT CLICK EQUIP | SHIFT CLICK SAVE | RIGHT CLICK STEAL";
             titleText.alignment = TextAlignmentOptions.Center;
-            titleText.fontSize = 28;
+            titleText.fontSize = 24;
             titleText.fontStyle = FontStyles.Bold;
             titleText.color = Color.white;
 
             titleRect.anchoredPosition = new Vector2(0, 420);
-            titleRect.sizeDelta = new Vector2(800, 50);
+            titleRect.sizeDelta = new Vector2(1000, 50);
 
             float[] xPositions = { -320f, 0f, 320f };
             float[] yPositions = { 200f, -160f };
@@ -174,6 +180,9 @@ namespace MyPersonalWardrobe
                 }
             }
 
+            // Generate Player List Sub-Menu Overlay
+            CreatePlayerSelectionMenu(canvasObj.transform);
+
             UpdateBorders();
         }
 
@@ -182,7 +191,6 @@ namespace MyPersonalWardrobe
             GameObject cardObj = new GameObject($"LoadoutCard_{index + 1}");
             RectTransform cardRect = cardObj.AddComponent<RectTransform>();
             cardRect.SetParent(parent, false);
-
             cardRect.sizeDelta = new Vector2(220, 240);
             cardRect.anchoredPosition = new Vector2(xPos, yPos);
 
@@ -197,9 +205,9 @@ namespace MyPersonalWardrobe
             }
             buttonBorders[index] = borderImg;
 
-            Button btn = cardObj.AddComponent<Button>();
-            btn.targetGraphic = borderImg;
-            btn.onClick.AddListener(() => {
+            // Custom Pointer Click Event Handler to properly separate left-click and right-click behaviors
+            CustomClickHandler clickHandler = cardObj.AddComponent<CustomClickHandler>();
+            clickHandler.OnLeftClick += () => {
                 selectedLoadout = index;
                 UpdateBorders();
 
@@ -212,7 +220,13 @@ namespace MyPersonalWardrobe
                 {
                     EquipPreset(index);
                 }
-            });
+            };
+
+            clickHandler.OnRightClick += () => {
+                selectedLoadout = index;
+                UpdateBorders();
+                OpenPlayerSelectionMenu(index);
+            };
 
             GameObject innerImgObj = new GameObject("PortraitView");
             RectTransform innerRect = innerImgObj.AddComponent<RectTransform>();
@@ -234,13 +248,180 @@ namespace MyPersonalWardrobe
             labelRect.SetParent(cardObj.transform, false);
 
             TextMeshProUGUI labelText = labelObj.AddComponent<TextMeshProUGUI>();
-            labelText.text = $"Slot {index + 1}\n<size=14>(Shift+Click to Save)</size>";
+            labelText.text = $"Slot {index + 1}\n<size=12>(Shift+LClick Save | RClick Steal)</size>";
             labelText.alignment = TextAlignmentOptions.Center;
-            labelText.fontSize = 18;
+            labelText.fontSize = 16;
             labelText.color = Color.white;
 
             labelRect.anchoredPosition = new Vector2(0, -145);
             labelRect.sizeDelta = new Vector2(220, 50);
+        }
+
+        private void CreatePlayerSelectionMenu(Transform parent)
+        {
+            playerListPanel = new GameObject("PlayerSelectionPanel");
+            RectTransform mainRect = playerListPanel.AddComponent<RectTransform>();
+            mainRect.SetParent(parent, false);
+            mainRect.sizeDelta = new Vector2(350, 500);
+            mainRect.anchoredPosition = Vector2.zero; // Centers panel overlay on screen
+
+            Image bg = playerListPanel.AddComponent<Image>();
+            bg.color = new Color(0.12f, 0.12f, 0.12f, 0.95f);
+            if (roundedUISprite != null)
+            {
+                bg.sprite = roundedUISprite;
+                bg.type = Image.Type.Sliced;
+            }
+
+            // Header Title
+            GameObject headerObj = new GameObject("Header");
+            RectTransform headerRect = headerObj.AddComponent<RectTransform>();
+            headerRect.SetParent(playerListPanel.transform, false);
+            headerRect.anchoredPosition = new Vector2(0, 220);
+            headerRect.sizeDelta = new Vector2(330, 40);
+
+            TextMeshProUGUI headerTxt = headerObj.AddComponent<TextMeshProUGUI>();
+            headerTxt.text = "SELECT PLAYER TO STEAL FROM";
+            headerTxt.fontSize = 16;
+            headerTxt.fontStyle = FontStyles.Bold;
+            headerTxt.alignment = TextAlignmentOptions.Center;
+            headerTxt.color = Color.yellow;
+
+            // Scroll View Setup
+            GameObject scrollObj = new GameObject("ScrollView");
+            RectTransform scrollRect = scrollObj.AddComponent<RectTransform>();
+            scrollRect.SetParent(playerListPanel.transform, false);
+            scrollRect.anchoredPosition = new Vector2(0, -20);
+            scrollRect.sizeDelta = new Vector2(320, 400);
+
+            ScrollRect scrollRectComp = scrollObj.AddComponent<ScrollRect>();
+            scrollObj.AddComponent<RectMask2D>();
+
+            // Content Holder
+            GameObject contentObj = new GameObject("Content");
+            RectTransform contentRect = contentObj.AddComponent<RectTransform>();
+            contentRect.SetParent(scrollObj.transform, false);
+            contentRect.anchorMin = new Vector2(0.5f, 1f);
+            contentRect.anchorMax = new Vector2(0.5f, 1f);
+            contentRect.pivot = new Vector2(0.5f, 1f);
+            contentRect.sizeDelta = new Vector2(300, 0);
+
+            VerticalLayoutGroup layout = contentObj.AddComponent<VerticalLayoutGroup>();
+            layout.spacing = 8f;
+            layout.childAlignment = TextAnchor.UpperCenter;
+            layout.childControlHeight = false;
+            layout.childControlWidth = false;
+
+            ContentSizeFitter fitter = contentObj.AddComponent<ContentSizeFitter>();
+            fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+            scrollRectComp.content = contentRect;
+            scrollRectComp.horizontal = false;
+            scrollRectComp.vertical = true;
+            playerListContent = contentRect.transform;
+
+            // Close Button
+            GameObject closeBtnObj = new GameObject("CloseButton");
+            RectTransform closeRect = closeBtnObj.AddComponent<RectTransform>();
+            closeRect.SetParent(playerListPanel.transform, false);
+            closeRect.anchoredPosition = new Vector2(145, 225);
+            closeRect.sizeDelta = new Vector2(30, 30);
+
+            Image closeImg = closeBtnObj.AddComponent<Image>();
+            closeImg.color = new Color(0.8f, 0.3f, 0.3f);
+            if (roundedUISprite != null) { closeImg.sprite = roundedUISprite; closeImg.type = Image.Type.Sliced; }
+
+            Button closeBtn = closeBtnObj.AddComponent<Button>();
+            closeBtn.onClick.AddListener(() => playerListPanel.SetActive(false));
+
+            GameObject closeTxtObj = new GameObject("X");
+            RectTransform closeTxtRect = closeTxtObj.AddComponent<RectTransform>();
+            closeTxtRect.SetParent(closeBtnObj.transform, false);
+            StretchToFill(closeTxtRect);
+            TextMeshProUGUI closeTxt = closeTxtObj.AddComponent<TextMeshProUGUI>();
+            closeTxt.text = "X";
+            closeTxt.fontSize = 14;
+            closeTxt.alignment = TextAlignmentOptions.Center;
+            closeTxt.color = Color.white;
+
+            playerListPanel.SetActive(false);
+        }
+
+        private void OpenPlayerSelectionMenu(int targetSlot)
+        {
+            slotTargetForSteal = targetSlot;
+
+            // Wipe pre-existing player buttons inside overlay contents
+            foreach (Transform child in playerListContent)
+            {
+                Destroy(child.gameObject);
+            }
+
+            if (!PhotonNetwork.InRoom)
+            {
+                Log.LogWarning("You are not currently in a room network lobby.");
+                return;
+            }
+
+            // Explicitly use Photon.Realtime.Player to avoid ambiguity
+            foreach (Photon.Realtime.Player player in PhotonNetwork.PlayerList)
+            {
+                Photon.Realtime.Player targetPlayer = player;
+                GameObject btnObj = new GameObject($"PlayerBtn_{targetPlayer.NickName}");
+                RectTransform btnRect = btnObj.AddComponent<RectTransform>();
+                btnRect.SetParent(playerListContent, false);
+                btnRect.sizeDelta = new Vector2(290, 45);
+
+                Image btnImg = btnObj.AddComponent<Image>();
+                btnImg.color = new Color(0.25f, 0.25f, 0.25f, 1f);
+                if (roundedUISprite != null)
+                {
+                    btnImg.sprite = roundedUISprite;
+                    btnImg.type = Image.Type.Sliced;
+                }
+
+                Button btn = btnObj.AddComponent<Button>();
+                btn.onClick.AddListener(() => {
+                    StealOutfitFromPlayer(targetPlayer, slotTargetForSteal);
+                    playerListPanel.SetActive(false);
+                });
+
+                GameObject textObj = new GameObject("Text");
+                RectTransform textRect = textObj.AddComponent<RectTransform>();
+                textRect.SetParent(btnObj.transform, false);
+                StretchToFill(textRect);
+
+                TextMeshProUGUI btnText = textObj.AddComponent<TextMeshProUGUI>();
+                btnText.text = targetPlayer.IsLocal ? $"{targetPlayer.NickName} (You)" : targetPlayer.NickName;
+                btnText.fontSize = 16;
+                btnText.alignment = TextAlignmentOptions.Center;
+                btnText.color = Color.white;
+            }
+
+            playerListPanel.SetActive(true);
+        }
+
+        private void StealOutfitFromPlayer(Photon.Realtime.Player targetPlayer, int slotIndex)
+        {
+            PersistentPlayerData playerData = GameHandler.GetService<PersistentPlayerDataService>().GetPlayerData(targetPlayer);
+            if (playerData == null || playerData.customizationData == null)
+            {
+                Log.LogError($"Could not extract network customization data from player: {targetPlayer.NickName}");
+                return;
+            }
+
+            savedPresets[slotIndex].skin = playerData.customizationData.currentSkin;
+            savedPresets[slotIndex].eyes = playerData.customizationData.currentEyes;
+            savedPresets[slotIndex].mouth = playerData.customizationData.currentMouth;
+            savedPresets[slotIndex].accessory = playerData.customizationData.currentAccessory;
+            savedPresets[slotIndex].outfit = playerData.customizationData.currentOutfit;
+            savedPresets[slotIndex].hat = playerData.customizationData.currentHat;
+            savedPresets[slotIndex].sash = playerData.customizationData.currentSash;
+            savedPresets[slotIndex].hasData = true;
+
+            SavePresetsToConfig();
+            GenerateAllThumbnailsImmediate();
+            Log.LogInfo($"Successfully cloned and saved {targetPlayer.NickName}'s appearance layout into Slot {slotIndex + 1}!");
         }
 
         private void SaveCurrentOutfitToPreset(int index)
@@ -358,7 +539,12 @@ namespace MyPersonalWardrobe
 
             for (int i = 0; i < 6; i++)
             {
-                if (!savedPresets[i].hasData) continue;
+                if (!savedPresets[i].hasData)
+                {
+                    portraitImages[i].texture = null;
+                    portraitImages[i].color = new Color(0.2f, 0.2f, 0.2f, 1f);
+                    continue;
+                }
                 if (PassportManager.instance == null || PassportManager.instance.dummy == null) continue;
 
                 GameObject tempDummy = Instantiate(PassportManager.instance.dummy.gameObject, renderRig.transform, false);
@@ -449,7 +635,6 @@ namespace MyPersonalWardrobe
             rect.sizeDelta = Vector2.zero;
         }
 
-        // Serialization rewritten to convert presets into a flat delimited list string
         private void SavePresetsToConfig()
         {
             StringBuilder builder = new StringBuilder();
@@ -460,12 +645,10 @@ namespace MyPersonalWardrobe
                 if (i < 5) builder.Append(";");
             }
 
-            // Assigning a brand new string value guarantees BepInEx flushes data to disk
             savedPresetsConfig.Value = builder.ToString();
             Config.Save();
         }
 
-        // Deserialization rewritten to cleanly split out data from the string values
         private void LoadPresetsFromConfig()
         {
             string rawData = savedPresetsConfig.Value;
@@ -493,6 +676,25 @@ namespace MyPersonalWardrobe
             catch (System.Exception ex)
             {
                 Log.LogError($"Error parsing list config fields: {ex.Message}");
+            }
+        }
+    }
+
+    // Helper Monobehaviour to cleanly listen for left and right mouse clicks independently
+    public class CustomClickHandler : MonoBehaviour, IPointerClickHandler
+    {
+        public System.Action OnLeftClick;
+        public System.Action OnRightClick;
+
+        public void OnPointerClick(PointerEventData eventData)
+        {
+            if (eventData.button == PointerEventData.InputButton.Left)
+            {
+                OnLeftClick?.Invoke();
+            }
+            else if (eventData.button == PointerEventData.InputButton.Right)
+            {
+                OnRightClick?.Invoke();
             }
         }
     }
