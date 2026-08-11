@@ -19,11 +19,21 @@ namespace MyPersonalWardrobe
     {
         internal static ManualLogSource Log { get; private set; } = null!;
 
+        private const int SLOTS_PER_PAGE = 8; // 2 Rows x 4 Columns
+
         private GameObject menuParent;
-        private Image[] buttonBorders = new Image[6];
-        private Image[] maskImages = new Image[6];
-        private RawImage[] portraitImages = new RawImage[6];
-        private RenderTexture[] savedTextures = new RenderTexture[6];
+        private Transform cardGridContainer;
+        private TextMeshProUGUI pageIndicatorText;
+
+        // Dynamic lists for page-based rendering
+        private List<Image> buttonBorders = new List<Image>();
+        private List<Image> maskImages = new List<Image>();
+        private List<RawImage> portraitImages = new List<RawImage>();
+        private List<RenderTexture> savedTextures = new List<RenderTexture>();
+        private List<TMP_InputField> slotNameInputs = new List<TMP_InputField>();
+        private List<GameObject> activeCardObjects = new List<GameObject>();
+
+        private int currentPage = 0;
         private int selectedLoadout = 0;
 
         private Sprite cardSprite;
@@ -38,6 +48,7 @@ namespace MyPersonalWardrobe
         [System.Serializable]
         public class OutfitPreset
         {
+            public string customName = "";
             public int skin;
             public int eyes;
             public int mouth;
@@ -45,12 +56,11 @@ namespace MyPersonalWardrobe
             public int outfit;
             public int hat;
             public int sash;
-            // Changed to match runtime array representation cleanly
             public bool[] badgeData = new bool[0];
             public bool hasData;
         }
 
-        private OutfitPreset[] savedPresets = new OutfitPreset[6];
+        private List<OutfitPreset> savedPresets = new List<OutfitPreset>();
         private ConfigEntry<string> savedPresetsConfig;
 
         private ConfigEntry<KeyCode> toggleKeyConfig;
@@ -66,19 +76,34 @@ namespace MyPersonalWardrobe
         {
             Log = Logger;
 
-            for (int i = 0; i < savedPresets.Length; i++)
-            {
-                savedPresets[i] = new OutfitPreset();
-            }
-
             toggleKeyConfig = Config.Bind("General", "MenuToggleKey", KeyCode.F9, "Keybind to open the wardrobe menu.");
             copyBadgesConfig = Config.Bind("General", "CopyBadges", true, "Whether to steal badge status when cloning an outfit.");
 
-            savedPresetsConfig = Config.Bind("General", "SavedPresetsDataList", "", "Flat list representation containing saved outfit presets data.");
+            savedPresetsConfig = Config.Bind("General", "SavedPresetsDataList_Pages", "", "Flat list representation containing saved outfit presets data.");
             LoadPresetsFromConfig();
+
+            // Ensure we start with at least 1 full page (8 slots)
+            EnsureMinimumSlots(SLOTS_PER_PAGE);
 
             cardSprite = GenerateProceduralRoundedSprite(256, 256, CornerRadius);
             maskSprite = GenerateProceduralRoundedSprite(256, 256, CornerRadius);
+        }
+
+        private void EnsureMinimumSlots(int totalRequired)
+        {
+            while (savedPresets.Count < totalRequired)
+            {
+                savedPresets.Add(new OutfitPreset { customName = $"Slot {savedPresets.Count + 1}" });
+            }
+        }
+
+        private void CheckAndExpandSlots(int modifiedIndex)
+        {
+            // If we fill up slot(s) near or at the total capacity, expand by 8 more slots automatically
+            if (modifiedIndex >= savedPresets.Count - 1)
+            {
+                EnsureMinimumSlots(savedPresets.Count + SLOTS_PER_PAGE);
+            }
         }
 
         private void Update()
@@ -103,8 +128,21 @@ namespace MyPersonalWardrobe
         {
             if (menuParent != null && menuParent.activeSelf)
             {
-                Cursor.lockState = CursorLockMode.None;
-                Cursor.visible = true;
+                bool isTyping = false;
+                foreach (var input in slotNameInputs)
+                {
+                    if (input != null && input.isFocused)
+                    {
+                        isTyping = true;
+                        break;
+                    }
+                }
+
+                if (!isTyping)
+                {
+                    Cursor.lockState = CursorLockMode.None;
+                    Cursor.visible = true;
+                }
             }
         }
 
@@ -114,7 +152,7 @@ namespace MyPersonalWardrobe
             {
                 Cursor.lockState = CursorLockMode.None;
                 Cursor.visible = true;
-                GenerateAllThumbnailsImmediate();
+                RenderCurrentPage();
             }
             else
             {
@@ -185,7 +223,6 @@ namespace MyPersonalWardrobe
             canvasObj.AddComponent<CanvasScaler>();
             canvasObj.AddComponent<GraphicRaycaster>();
 
-            // Fixed FindFirstObjectByType call compatibility
             if (Object.FindFirstObjectByType<UnityEngine.EventSystems.EventSystem>() == null)
             {
                 GameObject eventSystem = new GameObject("EventSystem");
@@ -206,45 +243,159 @@ namespace MyPersonalWardrobe
             bgImage.raycastTarget = true;
             StretchToFill(bgRect);
 
+            // Title
             GameObject titleObj = new GameObject("TitleText");
             RectTransform titleRect = titleObj.AddComponent<RectTransform>();
             titleRect.SetParent(canvasObj.transform, false);
 
             TextMeshProUGUI titleText = titleObj.AddComponent<TextMeshProUGUI>();
-            titleText.text = "WARDROBE PRESETS - LEFT CLICK EQUIP | SHIFT CLICK SAVE | RIGHT CLICK STEAL";
+            titleText.text = "WARDROBE PRESETS";
             titleText.alignment = TextAlignmentOptions.Center;
-            titleText.fontSize = 24;
+            titleText.fontSize = 28;
             titleText.fontStyle = FontStyles.Bold;
             titleText.color = Color.white;
 
-            titleRect.anchoredPosition = new Vector2(0, 420);
+            titleRect.anchoredPosition = new Vector2(0, 430);
             titleRect.sizeDelta = new Vector2(1000, 50);
 
-            float[] xPositions = { -320f, 0f, 320f };
-            float[] yPositions = { 180f, -140f };
+            // Container for 2x4 card grid
+            GameObject gridObj = new GameObject("CardGridContainer");
+            RectTransform gridRect = gridObj.AddComponent<RectTransform>();
+            gridRect.SetParent(canvasObj.transform, false);
+            gridRect.anchoredPosition = Vector2.zero;
+            cardGridContainer = gridRect.transform;
 
-            int index = 0;
-            for (int row = 0; row < 2; row++)
-            {
-                for (int col = 0; col < 3; col++)
-                {
-                    CreateLoadoutCard(canvasObj.transform, xPositions[col], yPositions[row], index);
-                    index++;
-                }
-            }
+            // Pagination Controls Footer
+            CreatePaginationControls(canvasObj.transform);
 
             CreatePlayerSelectionMenu(canvasObj.transform);
-            UpdateBorders();
             SetUILayerRecursive(canvasObj, 5);
         }
 
-        private void CreateLoadoutCard(Transform parent, float xPos, float yPos, int index)
+        private void CreatePaginationControls(Transform parent)
         {
-            GameObject cardObj = new GameObject($"LoadoutCard_{index + 1}");
+            GameObject navPanel = new GameObject("NavigationPanel");
+            RectTransform navRect = navPanel.AddComponent<RectTransform>();
+            navRect.SetParent(parent, false);
+            navRect.anchoredPosition = new Vector2(0, -380);
+            navRect.sizeDelta = new Vector2(600, 50);
+
+            // Previous Button
+            CreateButton(navPanel.transform, "< PREV", new Vector2(-150, 0), new Vector2(120, 40), () => {
+                if (currentPage > 0)
+                {
+                    currentPage--;
+                    RenderCurrentPage();
+                }
+            });
+
+            // Page Counter Text
+            GameObject pageTxtObj = new GameObject("PageText");
+            RectTransform pageTxtRect = pageTxtObj.AddComponent<RectTransform>();
+            pageTxtRect.SetParent(navPanel.transform, false);
+            pageTxtRect.anchoredPosition = Vector2.zero;
+            pageTxtRect.sizeDelta = new Vector2(180, 40);
+
+            pageIndicatorText = pageTxtObj.AddComponent<TextMeshProUGUI>();
+            pageIndicatorText.alignment = TextAlignmentOptions.Center;
+            pageIndicatorText.fontSize = 20;
+            pageIndicatorText.fontStyle = FontStyles.Bold;
+            pageIndicatorText.color = Color.white;
+
+            // Next Button
+            CreateButton(navPanel.transform, "NEXT >", new Vector2(150, 0), new Vector2(120, 40), () => {
+                int maxPages = Mathf.CeilToInt((float)savedPresets.Count / SLOTS_PER_PAGE);
+                if (currentPage < maxPages - 1)
+                {
+                    currentPage++;
+                    RenderCurrentPage();
+                }
+            });
+        }
+
+        private GameObject CreateButton(Transform parent, string text, Vector2 pos, Vector2 size, System.Action onClick)
+        {
+            GameObject btnObj = new GameObject($"Btn_{text}");
+            RectTransform rect = btnObj.AddComponent<RectTransform>();
+            rect.SetParent(parent, false);
+            rect.anchoredPosition = pos;
+            rect.sizeDelta = size;
+
+            Image img = btnObj.AddComponent<Image>();
+            img.color = new Color(0.2f, 0.2f, 0.2f, 1f);
+            if (cardSprite != null) { img.sprite = cardSprite; img.type = Image.Type.Sliced; }
+
+            Button btn = btnObj.AddComponent<Button>();
+            btn.onClick.AddListener(() => onClick?.Invoke());
+
+            GameObject txtObj = new GameObject("Text");
+            RectTransform txtRect = txtObj.AddComponent<RectTransform>();
+            txtRect.SetParent(btnObj.transform, false);
+            StretchToFill(txtRect);
+
+            TextMeshProUGUI txt = txtObj.AddComponent<TextMeshProUGUI>();
+            txt.text = text;
+            txt.fontSize = 15;
+            txt.fontStyle = FontStyles.Bold;
+            txt.alignment = TextAlignmentOptions.Center;
+            txt.color = Color.white;
+
+            return btnObj;
+        }
+
+        private void RenderCurrentPage()
+        {
+            // Clean up current active UI card elements
+            foreach (var card in activeCardObjects)
+            {
+                if (card != null) Destroy(card);
+            }
+
+            activeCardObjects.Clear();
+            buttonBorders.Clear();
+            maskImages.Clear();
+            portraitImages.Clear();
+            savedTextures.Clear();
+            slotNameInputs.Clear();
+
+            int totalPages = Mathf.Max(1, Mathf.CeilToInt((float)savedPresets.Count / SLOTS_PER_PAGE));
+            currentPage = Mathf.Clamp(currentPage, 0, totalPages - 1);
+
+            if (pageIndicatorText != null)
+            {
+                pageIndicatorText.text = $"Page {currentPage + 1} / {totalPages}";
+            }
+
+            // 2 Rows x 4 Columns
+            float[] xPositions = { -375f, -125f, 125f, 375f };
+            float[] yPositions = { 180f, -100f };
+
+            int startIndex = currentPage * SLOTS_PER_PAGE;
+
+            for (int i = 0; i < SLOTS_PER_PAGE; i++)
+            {
+                int globalIndex = startIndex + i;
+                if (globalIndex >= savedPresets.Count) break;
+
+                int row = i / 4;
+                int col = i % 4;
+
+                CreateLoadoutCard(cardGridContainer, xPositions[col], yPositions[row], globalIndex, i);
+            }
+
+            UpdateBorders();
+            GenerateAllThumbnailsImmediate();
+            SetUILayerRecursive(menuParent, 5);
+        }
+
+        private void CreateLoadoutCard(Transform parent, float xPos, float yPos, int globalIndex, int localIndex)
+        {
+            GameObject cardObj = new GameObject($"LoadoutCard_{globalIndex + 1}");
             RectTransform cardRect = cardObj.AddComponent<RectTransform>();
             cardRect.SetParent(parent, false);
-            cardRect.sizeDelta = new Vector2(220, 240);
+            cardRect.sizeDelta = new Vector2(210, 230);
             cardRect.anchoredPosition = new Vector2(xPos, yPos);
+            activeCardObjects.Add(cardObj);
 
             Image borderImg = cardObj.AddComponent<Image>();
             borderImg.color = inactiveColor;
@@ -255,28 +406,30 @@ namespace MyPersonalWardrobe
                 borderImg.sprite = cardSprite;
                 borderImg.type = Image.Type.Sliced;
             }
-            buttonBorders[index] = borderImg;
+            buttonBorders.Add(borderImg);
 
             CustomClickHandler clickHandler = cardObj.AddComponent<CustomClickHandler>();
             clickHandler.OnLeftClick += () => {
-                selectedLoadout = index;
+                if (localIndex < slotNameInputs.Count && slotNameInputs[localIndex] != null && slotNameInputs[localIndex].isFocused) return;
+
+                selectedLoadout = globalIndex;
                 UpdateBorders();
 
                 if (Input.GetKey(KeyCode.LeftShift))
                 {
-                    SaveCurrentOutfitToPreset(index);
-                    GenerateAllThumbnailsImmediate();
+                    SaveCurrentOutfitToPreset(globalIndex);
+                    RenderCurrentPage();
                 }
                 else
                 {
-                    EquipPreset(index);
+                    EquipPreset(globalIndex);
                 }
             };
 
             clickHandler.OnRightClick += () => {
-                selectedLoadout = index;
+                selectedLoadout = globalIndex;
                 UpdateBorders();
-                OpenPlayerSelectionMenu(index);
+                OpenPlayerSelectionMenu(globalIndex);
             };
 
             GameObject maskObj = new GameObject("PortraitMask");
@@ -294,7 +447,7 @@ namespace MyPersonalWardrobe
                 maskImg.sprite = maskSprite;
                 maskImg.type = Image.Type.Sliced;
             }
-            maskImages[index] = maskImg;
+            maskImages.Add(maskImg);
 
             Mask uiMask = maskObj.AddComponent<Mask>();
             uiMask.showMaskGraphic = false;
@@ -307,22 +460,51 @@ namespace MyPersonalWardrobe
             RawImage rawImg = innerImgObj.AddComponent<RawImage>();
             rawImg.color = new Color(0.15f, 0.15f, 0.15f, 1f);
             rawImg.raycastTarget = false;
-            portraitImages[index] = rawImg;
+            portraitImages.Add(rawImg);
 
-            savedTextures[index] = new RenderTexture(220, 240, 16);
+            RenderTexture rt = new RenderTexture(210, 230, 16);
+            savedTextures.Add(rt);
 
-            GameObject labelObj = new GameObject("Label");
-            RectTransform labelRect = labelObj.AddComponent<RectTransform>();
-            labelRect.SetParent(cardObj.transform, false);
+            // Label InputField directly attached below card bounds
+            GameObject inputObj = new GameObject("SlotNameInput");
+            RectTransform inputRect = inputObj.AddComponent<RectTransform>();
+            inputRect.SetParent(cardObj.transform, false);
+            inputRect.anchoredPosition = new Vector2(0, -140);
+            inputRect.sizeDelta = new Vector2(210, 35);
 
-            TextMeshProUGUI labelText = labelObj.AddComponent<TextMeshProUGUI>();
-            labelText.text = $"Slot {index + 1}\n<size=11>(Shift+LClick Save | RClick Steal)</size>";
-            labelText.alignment = TextAlignmentOptions.Center;
-            labelText.fontSize = 15;
-            labelText.color = Color.white;
+            TMP_InputField inputField = inputObj.AddComponent<TMP_InputField>();
 
-            labelRect.anchoredPosition = new Vector2(0, -145);
-            labelRect.sizeDelta = new Vector2(220, 50);
+            GameObject textObj = new GameObject("Text");
+            RectTransform textRect = textObj.AddComponent<RectTransform>();
+            textRect.SetParent(inputObj.transform, false);
+            StretchToFill(textRect);
+
+            TextMeshProUGUI inputText = textObj.AddComponent<TextMeshProUGUI>();
+            inputText.alignment = TextAlignmentOptions.Center;
+            inputText.fontSize = 18;
+            inputText.fontStyle = FontStyles.Bold;
+            inputText.color = Color.white;
+
+            inputField.textComponent = inputText;
+            inputField.text = string.IsNullOrEmpty(savedPresets[globalIndex].customName) ? $"Slot {globalIndex + 1}" : savedPresets[globalIndex].customName;
+
+            // Clear input field automatically on focus
+            inputField.onSelect.AddListener((_) => {
+                inputField.text = "";
+            });
+
+            int slotIdx = globalIndex;
+            inputField.onEndEdit.AddListener((val) => {
+                if (string.IsNullOrWhiteSpace(val))
+                {
+                    val = $"Slot {slotIdx + 1}";
+                    inputField.text = val;
+                }
+                savedPresets[slotIdx].customName = val;
+                SavePresetsToConfig();
+            });
+
+            slotNameInputs.Add(inputField);
         }
 
         private void CreatePlayerSelectionMenu(Transform parent)
@@ -469,11 +651,9 @@ namespace MyPersonalWardrobe
             playerListPanel.SetActive(true);
         }
 
-        // Helper method to resolve simulation Character script from a Photon Player
         private Character GetCharacterFromPlayer(Photon.Realtime.Player player)
         {
             if (player == null) return null;
-            // Fixed: Added FindObjectsSortMode argument required by modern Unity API versions
             foreach (Character character in Object.FindObjectsByType<Character>(FindObjectsSortMode.None))
             {
                 if (character.photonView != null && character.photonView.Owner == player)
@@ -493,6 +673,7 @@ namespace MyPersonalWardrobe
                 return;
             }
 
+            savedPresets[slotIndex].customName = targetPlayer.NickName;
             savedPresets[slotIndex].skin = playerData.customizationData.currentSkin;
             savedPresets[slotIndex].eyes = playerData.customizationData.currentEyes;
             savedPresets[slotIndex].mouth = playerData.customizationData.currentMouth;
@@ -501,7 +682,6 @@ namespace MyPersonalWardrobe
             savedPresets[slotIndex].hat = playerData.customizationData.currentHat;
             savedPresets[slotIndex].sash = playerData.customizationData.currentSash;
 
-            // Fixed: Appropriately assigned the bool[] badge data array directly
             savedPresets[slotIndex].badgeData = new bool[0];
 
             Character targetChar = GetCharacterFromPlayer(targetPlayer);
@@ -512,8 +692,9 @@ namespace MyPersonalWardrobe
 
             savedPresets[slotIndex].hasData = true;
 
+            CheckAndExpandSlots(slotIndex);
             SavePresetsToConfig();
-            GenerateAllThumbnailsImmediate();
+            RenderCurrentPage();
             Log.LogInfo($"Successfully cloned and saved {targetPlayer.NickName}'s appearance layout into Slot {slotIndex + 1}!");
         }
 
@@ -534,7 +715,6 @@ namespace MyPersonalWardrobe
             savedPresets[index].hat = playerData.customizationData.currentHat;
             savedPresets[index].sash = playerData.customizationData.currentSash;
 
-            // Fixed: Captured the bool[] array directly from local state safely
             savedPresets[index].badgeData = new bool[0];
             if (Character.localCharacter != null && Character.localCharacter.data != null)
             {
@@ -543,6 +723,7 @@ namespace MyPersonalWardrobe
 
             savedPresets[index].hasData = true;
 
+            CheckAndExpandSlots(index);
             SavePresetsToConfig();
             Log.LogInfo($"Saved current outfit configuration to Slot {index + 1}");
         }
@@ -564,7 +745,6 @@ namespace MyPersonalWardrobe
             CharacterCustomization.SetCharacterHat(preset.hat);
             CharacterCustomization.SetCharacterSash(preset.sash);
 
-            // Fixed: Relayed the underlying raw data array into the RPC sync target
             if (copyBadgesConfig.Value && Character.localCharacter != null && Character.localCharacter.photonView != null && preset.badgeData != null && preset.badgeData.Length > 0)
             {
                 Character.localCharacter.photonView.RPC("SyncBadgeStatus", RpcTarget.All, new object[] { preset.badgeData });
@@ -644,9 +824,14 @@ namespace MyPersonalWardrobe
                 gotOriginalLook = true;
             }
 
-            for (int i = 0; i < 6; i++)
+            int startIndex = currentPage * SLOTS_PER_PAGE;
+
+            for (int i = 0; i < portraitImages.Count; i++)
             {
-                if (!savedPresets[i].hasData)
+                int globalIndex = startIndex + i;
+                if (globalIndex >= savedPresets.Count) break;
+
+                if (!savedPresets[globalIndex].hasData)
                 {
                     portraitImages[i].texture = null;
                     portraitImages[i].color = new Color(0.2f, 0.2f, 0.2f, 1f);
@@ -667,7 +852,7 @@ namespace MyPersonalWardrobe
                     }
                 }
 
-                ApplyCustomizationValues(tempDummy, savedPresets[i]);
+                ApplyCustomizationValues(tempDummy, savedPresets[globalIndex]);
 
                 rigCamera.targetTexture = savedTextures[i];
                 rigCamera.Render();
@@ -726,11 +911,13 @@ namespace MyPersonalWardrobe
 
         private void UpdateBorders()
         {
-            for (int i = 0; i < buttonBorders.Length; i++)
+            int startIndex = currentPage * SLOTS_PER_PAGE;
+            for (int i = 0; i < buttonBorders.Count; i++)
             {
+                int globalIndex = startIndex + i;
                 if (buttonBorders[i] != null)
                 {
-                    buttonBorders[i].color = (i == selectedLoadout) ? activeColor : inactiveColor;
+                    buttonBorders[i].color = (globalIndex == selectedLoadout) ? activeColor : inactiveColor;
                 }
             }
         }
@@ -745,14 +932,14 @@ namespace MyPersonalWardrobe
         private void SavePresetsToConfig()
         {
             StringBuilder builder = new StringBuilder();
-            for (int i = 0; i < 6; i++)
+            for (int i = 0; i < savedPresets.Count; i++)
             {
                 OutfitPreset p = savedPresets[i];
-                // Simply flattening array to a binary string representation for basic serialization
                 string flatBadges = p.badgeData != null ? string.Join("-", System.Array.ConvertAll(p.badgeData, b => b ? "1" : "0")) : "0";
+                string cleanName = string.IsNullOrEmpty(p.customName) ? $"Slot {i + 1}" : p.customName.Replace(",", "").Replace(";", "");
 
-                builder.Append($"{p.skin},{p.eyes},{p.mouth},{p.accessory},{p.outfit},{p.hat},{p.sash},{flatBadges},{(p.hasData ? 1 : 0)}");
-                if (i < 5) builder.Append(";");
+                builder.Append($"{p.skin},{p.eyes},{p.mouth},{p.accessory},{p.outfit},{p.hat},{p.sash},{flatBadges},{(p.hasData ? 1 : 0)},{cleanName}");
+                if (i < savedPresets.Count - 1) builder.Append(";");
             }
 
             savedPresetsConfig.Value = builder.ToString();
@@ -766,37 +953,47 @@ namespace MyPersonalWardrobe
 
             try
             {
+                savedPresets.Clear();
                 string[] cards = rawData.Split(';');
-                for (int i = 0; i < Mathf.Min(6, cards.Length); i++)
+                for (int i = 0; i < cards.Length; i++)
                 {
                     string[] properties = cards[i].Split(',');
-                    if (properties.Length >= 9)
+                    OutfitPreset preset = new OutfitPreset();
+
+                    if (properties.Length >= 10)
                     {
-                        savedPresets[i].skin = int.Parse(properties[0]);
-                        savedPresets[i].eyes = int.Parse(properties[1]);
-                        savedPresets[i].mouth = int.Parse(properties[2]);
-                        savedPresets[i].accessory = int.Parse(properties[3]);
-                        savedPresets[i].outfit = int.Parse(properties[4]);
-                        savedPresets[i].hat = int.Parse(properties[5]);
-                        savedPresets[i].sash = int.Parse(properties[6]);
+                        preset.skin = int.Parse(properties[0]);
+                        preset.eyes = int.Parse(properties[1]);
+                        preset.mouth = int.Parse(properties[2]);
+                        preset.accessory = int.Parse(properties[3]);
+                        preset.outfit = int.Parse(properties[4]);
+                        preset.hat = int.Parse(properties[5]);
+                        preset.sash = int.Parse(properties[6]);
 
                         string[] badgeBits = properties[7].Split('-');
-                        savedPresets[i].badgeData = System.Array.ConvertAll(badgeBits, bit => bit == "1");
+                        preset.badgeData = System.Array.ConvertAll(badgeBits, bit => bit == "1");
 
-                        savedPresets[i].hasData = int.Parse(properties[8]) == 1;
+                        preset.hasData = int.Parse(properties[8]) == 1;
+                        preset.customName = properties[9];
                     }
-                    else if (properties.Length >= 8)
+                    else if (properties.Length >= 9)
                     {
-                        savedPresets[i].skin = int.Parse(properties[0]);
-                        savedPresets[i].eyes = int.Parse(properties[1]);
-                        savedPresets[i].mouth = int.Parse(properties[2]);
-                        savedPresets[i].accessory = int.Parse(properties[3]);
-                        savedPresets[i].outfit = int.Parse(properties[4]);
-                        savedPresets[i].hat = int.Parse(properties[5]);
-                        savedPresets[i].sash = int.Parse(properties[6]);
-                        savedPresets[i].badgeData = new bool[0];
-                        savedPresets[i].hasData = int.Parse(properties[7]) == 1;
+                        preset.skin = int.Parse(properties[0]);
+                        preset.eyes = int.Parse(properties[1]);
+                        preset.mouth = int.Parse(properties[2]);
+                        preset.accessory = int.Parse(properties[3]);
+                        preset.outfit = int.Parse(properties[4]);
+                        preset.hat = int.Parse(properties[5]);
+                        preset.sash = int.Parse(properties[6]);
+
+                        string[] badgeBits = properties[7].Split('-');
+                        preset.badgeData = System.Array.ConvertAll(badgeBits, bit => bit == "1");
+
+                        preset.hasData = int.Parse(properties[8]) == 1;
+                        preset.customName = $"Slot {i + 1}";
                     }
+
+                    savedPresets.Add(preset);
                 }
             }
             catch (System.Exception ex)
