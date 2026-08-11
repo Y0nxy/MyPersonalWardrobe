@@ -750,9 +750,10 @@ namespace MyPersonalWardrobe
                 Character.localCharacter.photonView.RPC("SyncBadgeStatus", RpcTarget.All, new object[] { preset.badgeData });
             }
 
-            if (PassportManager.instance != null && PassportManager.instance.dummy != null && PassportManager.instance.dummy.gameObject.activeInHierarchy)
+            // Fixed: Directly invoke UpdateDummy on PlayerCustomizationDummy without reflection
+            if (PassportManager.instance != null && PassportManager.instance.dummy != null)
             {
-                PassportManager.instance.dummy.UpdateDummy();
+                PassportManager.instance.dummy.UpdateDummy(null);
             }
             Log.LogInfo($"Equipped Preset Slot {index + 1}!");
         }
@@ -844,15 +845,12 @@ namespace MyPersonalWardrobe
                 tempDummy.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
                 tempDummy.SetActive(true);
 
-                foreach (var comp in tempDummy.GetComponents<MonoBehaviour>())
+                // Fixed: Explicitly fetch PlayerCustomizationDummy component directly
+                PlayerCustomizationDummy dummyComp = tempDummy.GetComponent<PlayerCustomizationDummy>();
+                if (dummyComp != null)
                 {
-                    if (comp != null && comp.GetType().Name == "PassportDummy")
-                    {
-                        comp.enabled = false;
-                    }
+                    ApplyCustomizationValues(dummyComp, savedPresets[globalIndex]);
                 }
-
-                ApplyCustomizationValues(tempDummy, savedPresets[globalIndex]);
 
                 rigCamera.targetTexture = savedTextures[i];
                 rigCamera.Render();
@@ -877,7 +875,7 @@ namespace MyPersonalWardrobe
             }
         }
 
-        private void ApplyCustomizationValues(GameObject target, OutfitPreset preset)
+        private void ApplyCustomizationValues(PlayerCustomizationDummy dummyComp, OutfitPreset preset)
         {
             CharacterCustomization.SetCharacterSkinColor(preset.skin);
             CharacterCustomization.SetCharacterEyes(preset.eyes);
@@ -887,25 +885,10 @@ namespace MyPersonalWardrobe
             CharacterCustomization.SetCharacterHat(preset.hat);
             CharacterCustomization.SetCharacterSash(preset.sash);
 
-            foreach (var comp in target.GetComponents<MonoBehaviour>())
+            // Fixed: Directly invoke UpdateDummy with explicit null argument matching PlayerCustomizationDummy signature
+            if (dummyComp != null)
             {
-                if (comp != null && comp.GetType().Name == "PassportDummy")
-                {
-                    comp.enabled = true;
-                    comp.SendMessage("UpdateDummy", SendMessageOptions.DontRequireReceiver);
-                    comp.enabled = false;
-                }
-            }
-
-            target.SendMessage("UpdateDummy", SendMessageOptions.DontRequireReceiver);
-
-            foreach (var comp in target.GetComponentsInChildren<MonoBehaviour>(true))
-            {
-                if (comp != null && (comp.GetType().Name == "CharacterVisualsCustomizationComponent" || comp.GetType().Name == "CharacterCustomization"))
-                {
-                    comp.SendMessage("Refresh", SendMessageOptions.DontRequireReceiver);
-                    comp.SendMessage("UpdateDummy", SendMessageOptions.DontRequireReceiver);
-                }
+                dummyComp.UpdateDummy(null);
             }
         }
 
