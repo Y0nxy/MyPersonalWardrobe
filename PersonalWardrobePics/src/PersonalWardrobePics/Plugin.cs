@@ -1,16 +1,17 @@
-using System.Collections;
-using System.Collections.Generic;
-using System.Text;
 using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
+using HarmonyLib;
 using Photon.Pun;
 using Photon.Realtime;
+using System;
+using System.Collections.Generic;
+using System.Reflection;
+using System.Text;
 using TMPro;
 using UnityEngine;
-using UnityEngine.UI;
 using UnityEngine.EventSystems;
-using Zorro.Core;
+using UnityEngine.UI;
 
 namespace MyPersonalWardrobe
 {
@@ -21,9 +22,12 @@ namespace MyPersonalWardrobe
 
         private const int SLOTS_PER_PAGE = 8; // 2 Rows x 4 Columns
 
-        private GameObject menuParent;
+        private static GameObject menuParent;
         private Transform cardGridContainer;
         private TextMeshProUGUI pageIndicatorText;
+
+        // Optimized typing flag to avoid looping inputs every frame
+        private bool isTyping = false;
 
         // Dynamic lists for page-based rendering
         private List<Image> buttonBorders = new List<Image>();
@@ -71,6 +75,9 @@ namespace MyPersonalWardrobe
 
         private GameObject renderRig;
         private Camera rigCamera;
+        static TMP_FontAsset peakFont = null;
+        static Harmony harmony;
+        private static bool blockInput = false;
 
         private void Awake()
         {
@@ -87,6 +94,27 @@ namespace MyPersonalWardrobe
 
             cardSprite = GenerateProceduralRoundedSprite(256, 256, CornerRadius);
             maskSprite = GenerateProceduralRoundedSprite(256, 256, CornerRadius);
+            harmony = new Harmony(Name);
+            harmony.PatchAll();
+            
+        }
+        void OnDestroy()
+        {
+            Destroy(menuParent);
+            harmony.UnpatchSelf();
+        }
+        [HarmonyPatch(typeof(GUIManager), "UpdateWindowStatus")]
+        public static class patch
+        {
+            [HarmonyPostfix]
+            public static void UpdateWindowStatusPatch(GUIManager __instance)
+            {
+                if (menuParent != null && blockInput)
+                {
+                    __instance.windowShowingCursor = true;
+                    __instance.windowBlockingInput = true;
+                }
+            }
         }
 
         private void EnsureMinimumSlots(int totalRequired)
@@ -126,23 +154,11 @@ namespace MyPersonalWardrobe
 
         private void LateUpdate()
         {
-            if (menuParent != null && menuParent.activeSelf)
+            // Lock state forced every frame while menu active, unless user is typing
+            if (menuParent != null && menuParent.activeSelf && !isTyping)
             {
-                bool isTyping = false;
-                foreach (var input in slotNameInputs)
-                {
-                    if (input != null && input.isFocused)
-                    {
-                        isTyping = true;
-                        break;
-                    }
-                }
-
-                if (!isTyping)
-                {
-                    Cursor.lockState = CursorLockMode.None;
-                    Cursor.visible = true;
-                }
+                Cursor.lockState = CursorLockMode.None;
+                Cursor.visible = true;
             }
         }
 
@@ -152,12 +168,15 @@ namespace MyPersonalWardrobe
             {
                 Cursor.lockState = CursorLockMode.None;
                 Cursor.visible = true;
+                blockInput = true;
                 RenderCurrentPage();
             }
             else
             {
                 Cursor.lockState = CursorLockMode.Locked;
                 Cursor.visible = false;
+                isTyping = false;
+                blockInput = false;
                 DestroyRenderRig();
                 if (playerListPanel != null) playerListPanel.SetActive(false);
             }
@@ -216,6 +235,12 @@ namespace MyPersonalWardrobe
         private void CreateWardrobeUI()
         {
             GameObject canvasObj = new GameObject("WardrobeCanvas");
+            if (peakFont == null)
+            {
+                TMP_FontAsset[] fonts = Resources.FindObjectsOfTypeAll<TMP_FontAsset>();
+                peakFont = Array.Find(fonts, f => f.name == "DarumaDropOne-Regular SDF");
+                if (peakFont == null) Log.LogWarning("didn't find peakfont");
+            }
             Canvas canvas = canvasObj.AddComponent<Canvas>();
             canvas.renderMode = RenderMode.ScreenSpaceOverlay;
             canvas.sortingOrder = 9999;
@@ -223,7 +248,7 @@ namespace MyPersonalWardrobe
             canvasObj.AddComponent<CanvasScaler>();
             canvasObj.AddComponent<GraphicRaycaster>();
 
-            if (Object.FindFirstObjectByType<UnityEngine.EventSystems.EventSystem>() == null)
+            if (UnityEngine.Object.FindFirstObjectByType<UnityEngine.EventSystems.EventSystem>() == null)
             {
                 GameObject eventSystem = new GameObject("EventSystem");
                 eventSystem.AddComponent<UnityEngine.EventSystems.EventSystem>();
@@ -249,14 +274,31 @@ namespace MyPersonalWardrobe
             titleRect.SetParent(canvasObj.transform, false);
 
             TextMeshProUGUI titleText = titleObj.AddComponent<TextMeshProUGUI>();
-            titleText.text = "WARDROBE PRESETS";
+            titleText.text = "tinyPresets?";
             titleText.alignment = TextAlignmentOptions.Center;
-            titleText.fontSize = 28;
-            titleText.fontStyle = FontStyles.Bold;
+            titleText.fontSize = 50;
+            titleText.font = peakFont;
+            //titleText.fontStyle = FontStyles.Bold;
             titleText.color = Color.white;
 
             titleRect.anchoredPosition = new Vector2(0, 430);
-            titleRect.sizeDelta = new Vector2(1000, 50);
+            titleRect.sizeDelta = new Vector2(1000, 40);
+
+            // Subtitle / Instruction Label directly below Title
+            GameObject subtitleObj = new GameObject("SubtitleText");
+            RectTransform subtitleRect = subtitleObj.AddComponent<RectTransform>();
+            subtitleRect.SetParent(canvasObj.transform, false);
+
+            TextMeshProUGUI subtitleText = subtitleObj.AddComponent<TextMeshProUGUI>();
+            subtitleText.text = "SHIFT CLICK - SAVE | RIGHT CLICK - COPY";
+            subtitleText.alignment = TextAlignmentOptions.Center;
+            subtitleText.fontSize = 40;
+            subtitleText.font = peakFont;
+            //subtitleText.fontStyle = FontStyles.Bold;
+            subtitleText.color = new Color(0.8f, 0.8f, 0.8f, 0.9f);
+
+            subtitleRect.anchoredPosition = new Vector2(0, 395);
+            subtitleRect.sizeDelta = new Vector2(1000, 30);
 
             // Container for 2x4 card grid
             GameObject gridObj = new GameObject("CardGridContainer");
@@ -299,7 +341,8 @@ namespace MyPersonalWardrobe
             pageIndicatorText = pageTxtObj.AddComponent<TextMeshProUGUI>();
             pageIndicatorText.alignment = TextAlignmentOptions.Center;
             pageIndicatorText.fontSize = 20;
-            pageIndicatorText.fontStyle = FontStyles.Bold;
+            pageIndicatorText.font = peakFont;
+            //pageIndicatorText.fontStyle = FontStyles.Bold;
             pageIndicatorText.color = Color.white;
 
             // Next Button
@@ -335,8 +378,9 @@ namespace MyPersonalWardrobe
 
             TextMeshProUGUI txt = txtObj.AddComponent<TextMeshProUGUI>();
             txt.text = text;
-            txt.fontSize = 15;
-            txt.fontStyle = FontStyles.Bold;
+            txt.fontSize = 20;
+            txt.font = peakFont;
+            //txt.fontStyle = FontStyles.Bold;
             txt.alignment = TextAlignmentOptions.Center;
             txt.color = Color.white;
 
@@ -415,7 +459,7 @@ namespace MyPersonalWardrobe
                 selectedLoadout = globalIndex;
                 UpdateBorders();
 
-                if (Input.GetKey(KeyCode.LeftShift))
+                if (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift))
                 {
                     SaveCurrentOutfitToPreset(globalIndex);
                     RenderCurrentPage();
@@ -482,19 +526,26 @@ namespace MyPersonalWardrobe
             TextMeshProUGUI inputText = textObj.AddComponent<TextMeshProUGUI>();
             inputText.alignment = TextAlignmentOptions.Center;
             inputText.fontSize = 18;
-            inputText.fontStyle = FontStyles.Bold;
+            inputText.font = peakFont;
+            //inputText.fontStyle = FontStyles.Bold;
             inputText.color = Color.white;
 
             inputField.textComponent = inputText;
             inputField.text = string.IsNullOrEmpty(savedPresets[globalIndex].customName) ? $"Slot {globalIndex + 1}" : savedPresets[globalIndex].customName;
 
-            // Clear input field automatically on focus
+            // Update isTyping state dynamically when selected/deselected
             inputField.onSelect.AddListener((_) => {
                 inputField.text = "";
+                isTyping = true;
+            });
+
+            inputField.onDeselect.AddListener((_) => {
+                isTyping = false;
             });
 
             int slotIdx = globalIndex;
             inputField.onEndEdit.AddListener((val) => {
+                isTyping = false;
                 if (string.IsNullOrWhiteSpace(val))
                 {
                     val = $"Slot {slotIdx + 1}";
@@ -531,9 +582,10 @@ namespace MyPersonalWardrobe
             headerRect.sizeDelta = new Vector2(330, 40);
 
             TextMeshProUGUI headerTxt = headerObj.AddComponent<TextMeshProUGUI>();
-            headerTxt.text = "SELECT PLAYER TO STEAL FROM";
+            headerTxt.text = "SELECT PLAYER TO COPY";
             headerTxt.fontSize = 16;
-            headerTxt.fontStyle = FontStyles.Bold;
+            headerTxt.font = peakFont;
+            //headerTxt.fontStyle = FontStyles.Bold;
             headerTxt.alignment = TextAlignmentOptions.Center;
             headerTxt.color = Color.yellow;
 
@@ -590,6 +642,7 @@ namespace MyPersonalWardrobe
             TextMeshProUGUI closeTxt = closeTxtObj.AddComponent<TextMeshProUGUI>();
             closeTxt.text = "X";
             closeTxt.fontSize = 14;
+            closeTxt.font = peakFont;
             closeTxt.alignment = TextAlignmentOptions.Center;
             closeTxt.color = Color.white;
 
@@ -643,6 +696,7 @@ namespace MyPersonalWardrobe
                 TextMeshProUGUI btnText = textObj.AddComponent<TextMeshProUGUI>();
                 btnText.text = targetPlayer.IsLocal ? $"{targetPlayer.NickName} (You)" : targetPlayer.NickName;
                 btnText.fontSize = 16;
+                btnText.font = peakFont;
                 btnText.alignment = TextAlignmentOptions.Center;
                 btnText.color = Color.white;
             }
@@ -654,7 +708,7 @@ namespace MyPersonalWardrobe
         private Character GetCharacterFromPlayer(Photon.Realtime.Player player)
         {
             if (player == null) return null;
-            foreach (Character character in Object.FindObjectsByType<Character>(FindObjectsSortMode.None))
+            foreach (Character character in UnityEngine.Object.FindObjectsByType<Character>(FindObjectsSortMode.None))
             {
                 if (character.photonView != null && character.photonView.Owner == player)
                 {
@@ -750,7 +804,6 @@ namespace MyPersonalWardrobe
                 Character.localCharacter.photonView.RPC("SyncBadgeStatus", RpcTarget.All, new object[] { preset.badgeData });
             }
 
-            // Fixed: Directly invoke UpdateDummy on PlayerCustomizationDummy without reflection
             if (PassportManager.instance != null && PassportManager.instance.dummy != null)
             {
                 PassportManager.instance.dummy.UpdateDummy(null);
@@ -845,7 +898,6 @@ namespace MyPersonalWardrobe
                 tempDummy.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
                 tempDummy.SetActive(true);
 
-                // Fixed: Explicitly fetch PlayerCustomizationDummy component directly
                 PlayerCustomizationDummy dummyComp = tempDummy.GetComponent<PlayerCustomizationDummy>();
                 if (dummyComp != null)
                 {
@@ -885,7 +937,6 @@ namespace MyPersonalWardrobe
             CharacterCustomization.SetCharacterHat(preset.hat);
             CharacterCustomization.SetCharacterSash(preset.sash);
 
-            // Fixed: Directly invoke UpdateDummy with explicit null argument matching PlayerCustomizationDummy signature
             if (dummyComp != null)
             {
                 dummyComp.UpdateDummy(null);
