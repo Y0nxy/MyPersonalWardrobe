@@ -16,7 +16,7 @@ namespace TextChatCommands
             steamId = 0UL;
             if (photonPlayer == null) return false;
             var id = ulong.TryParse(photonPlayer.UserId, out steamId);
-            Plugin.logMessage(id+" id, steamid:" + steamId);
+            //Plugin.logMessage(id+" id, steamid:" + steamId);
             return id;
         }
 

@@ -8,6 +8,7 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Text;
+using TextChatCommands;
 using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -18,18 +19,17 @@ namespace tinyWardrobe
     [BepInAutoPlugin]
     public partial class Plugin : BaseUnityPlugin
     {
+        public static Plugin Instance { get; private set; }
         internal static ManualLogSource Log { get; private set; } = null!;
 
-        private const int SLOTS_PER_PAGE = 8; // 2 Rows x 4 Columns
+        private const int SLOTS_PER_PAGE = 8;
 
         private static GameObject menuParent;
         private Transform cardGridContainer;
         private TextMeshProUGUI pageIndicatorText;
 
-        // Optimized typing flag to avoid looping inputs every frame
         private bool isTyping = false;
 
-        // Dynamic lists for page-based rendering
         private List<Image> buttonBorders = new List<Image>();
         private List<Image> maskImages = new List<Image>();
         private List<RawImage> portraitImages = new List<RawImage>();
@@ -44,7 +44,6 @@ namespace tinyWardrobe
         private Sprite maskSprite;
         private const int CornerRadius = 26;
 
-        // Player Stealer UI Elements
         private GameObject playerListPanel;
         private Transform playerListContent;
         private int slotTargetForSteal = -1;
@@ -75,12 +74,23 @@ namespace tinyWardrobe
 
         private GameObject renderRig;
         private Camera rigCamera;
-        static TMP_FontAsset peakFont = null;
+        private static TMP_FontAsset peakFont = null;
         static Harmony harmony;
         private static bool blockInput = false;
 
+        public static TMP_FontAsset GetFont()
+        {
+            if (peakFont == null)
+            {
+                TMP_FontAsset[] fonts = Resources.FindObjectsOfTypeAll<TMP_FontAsset>();
+                peakFont = Array.Find(fonts, f => f.name == "DarumaDropOne-Regular SDF");
+            }
+            return peakFont;
+        }
+
         private void Awake()
         {
+            Instance = this;
             Log = Logger;
 
             toggleKeyConfig = Config.Bind("General", "MenuToggleKey", KeyCode.F9, "Keybind to open the wardrobe menu.");
@@ -89,7 +99,6 @@ namespace tinyWardrobe
             savedPresetsConfig = Config.Bind("General", "SavedPresetsDataList_Pages", "", "Flat list representation containing saved outfit presets data.");
             LoadPresetsFromConfig();
 
-            // Ensure we start with at least 1 full page (8 slots)
             EnsureMinimumSlots(SLOTS_PER_PAGE);
 
             cardSprite = GenerateProceduralRoundedSprite(256, 256, CornerRadius);
@@ -97,21 +106,21 @@ namespace tinyWardrobe
             harmony = new Harmony(Name);
             harmony.PatchAll();
             SkinSafe.EnsureInitialized();
-
-
         }
+
         void OnDestroy()
         {
             Destroy(menuParent);
             harmony.UnpatchSelf();
         }
+
         [HarmonyPatch(typeof(GUIManager), "UpdateWindowStatus")]
         public static class patch
         {
             [HarmonyPostfix]
             public static void UpdateWindowStatusPatch(GUIManager __instance)
             {
-                if (menuParent != null && blockInput)
+                if ((menuParent != null && blockInput) || SkinSafe.uiOpen)
                 {
                     __instance.windowShowingCursor = true;
                     __instance.windowBlockingInput = true;
@@ -129,7 +138,6 @@ namespace tinyWardrobe
 
         private void CheckAndExpandSlots(int modifiedIndex)
         {
-            // If we fill up slot(s) near or at the total capacity, expand by 8 more slots automatically
             if (modifiedIndex >= savedPresets.Count - 1)
             {
                 EnsureMinimumSlots(savedPresets.Count + SLOTS_PER_PAGE);
@@ -156,8 +164,7 @@ namespace tinyWardrobe
 
         private void LateUpdate()
         {
-            // Lock state forced every frame while menu active, unless user is typing
-            if (menuParent != null && menuParent.activeSelf && !isTyping)
+            if ((menuParent != null && menuParent.activeSelf && !isTyping) || SkinSafe.uiOpen)
             {
                 Cursor.lockState = CursorLockMode.None;
                 Cursor.visible = true;
@@ -172,9 +179,24 @@ namespace tinyWardrobe
                 Cursor.visible = true;
                 blockInput = true;
                 RenderCurrentPage();
+
+                if (SkinSafe.wasOpenBeforeMenuClosed)
+                {
+                    SkinSafe.SetUIVisibility(true);
+                }
             }
             else
             {
+                if (SkinSafe.uiOpen)
+                {
+                    SkinSafe.wasOpenBeforeMenuClosed = true;
+                    SkinSafe.SetUIVisibility(false);
+                }
+                else
+                {
+                    SkinSafe.wasOpenBeforeMenuClosed = false;
+                }
+
                 Cursor.lockState = CursorLockMode.Locked;
                 Cursor.visible = false;
                 isTyping = false;
@@ -237,12 +259,6 @@ namespace tinyWardrobe
         private void CreateWardrobeUI()
         {
             GameObject canvasObj = new GameObject("WardrobeCanvas");
-            if (peakFont == null)
-            {
-                TMP_FontAsset[] fonts = Resources.FindObjectsOfTypeAll<TMP_FontAsset>();
-                peakFont = Array.Find(fonts, f => f.name == "DarumaDropOne-Regular SDF");
-                if (peakFont == null) Log.LogWarning("didn't find peakfont");
-            }
             Canvas canvas = canvasObj.AddComponent<Canvas>();
             canvas.renderMode = RenderMode.ScreenSpaceOverlay;
             canvas.sortingOrder = 9999;
@@ -260,7 +276,6 @@ namespace tinyWardrobe
 
             DontDestroyOnLoad(canvasObj);
             menuParent = canvasObj;
-            menuParent.AddComponent<SteamIdJoinLogger>();
 
             GameObject bgObj = new GameObject("Background");
             RectTransform bgRect = bgObj.AddComponent<RectTransform>();
@@ -271,7 +286,6 @@ namespace tinyWardrobe
             bgImage.raycastTarget = true;
             StretchToFill(bgRect);
 
-            // Title
             GameObject titleObj = new GameObject("TitleText");
             RectTransform titleRect = titleObj.AddComponent<RectTransform>();
             titleRect.SetParent(canvasObj.transform, false);
@@ -280,14 +294,12 @@ namespace tinyWardrobe
             titleText.text = "tinyPresets?";
             titleText.alignment = TextAlignmentOptions.Center;
             titleText.fontSize = 50;
-            titleText.font = peakFont;
-            //titleText.fontStyle = FontStyles.Bold;
+            titleText.font = GetFont();
             titleText.color = Color.white;
 
             titleRect.anchoredPosition = new Vector2(0, 430);
             titleRect.sizeDelta = new Vector2(1000, 40);
 
-            // Subtitle / Instruction Label directly below Title
             GameObject subtitleObj = new GameObject("SubtitleText");
             RectTransform subtitleRect = subtitleObj.AddComponent<RectTransform>();
             subtitleRect.SetParent(canvasObj.transform, false);
@@ -296,23 +308,23 @@ namespace tinyWardrobe
             subtitleText.text = "SHIFT CLICK - SAVE | RIGHT CLICK - COPY";
             subtitleText.alignment = TextAlignmentOptions.Center;
             subtitleText.fontSize = 40;
-            subtitleText.font = peakFont;
-            //subtitleText.fontStyle = FontStyles.Bold;
+            subtitleText.font = GetFont();
             subtitleText.color = new Color(0.8f, 0.8f, 0.8f, 0.9f);
 
             subtitleRect.anchoredPosition = new Vector2(0, 395);
             subtitleRect.sizeDelta = new Vector2(1000, 30);
 
-            // Container for 2x4 card grid
+            CreateButton(canvasObj.transform, "SKIN SAFE", new Vector2(420, 430), new Vector2(140, 45), () => {
+                SkinSafe.ToggleUI();
+            });
+
             GameObject gridObj = new GameObject("CardGridContainer");
             RectTransform gridRect = gridObj.AddComponent<RectTransform>();
             gridRect.SetParent(canvasObj.transform, false);
             gridRect.anchoredPosition = Vector2.zero;
             cardGridContainer = gridRect.transform;
 
-            // Pagination Controls Footer
             CreatePaginationControls(canvasObj.transform);
-
             CreatePlayerSelectionMenu(canvasObj.transform);
             SetUILayerRecursive(canvasObj, 5);
         }
@@ -325,7 +337,6 @@ namespace tinyWardrobe
             navRect.anchoredPosition = new Vector2(0, -380);
             navRect.sizeDelta = new Vector2(600, 50);
 
-            // Previous Button
             CreateButton(navPanel.transform, "< PREV", new Vector2(-150, 0), new Vector2(120, 40), () => {
                 if (currentPage > 0)
                 {
@@ -334,7 +345,6 @@ namespace tinyWardrobe
                 }
             });
 
-            // Page Counter Text
             GameObject pageTxtObj = new GameObject("PageText");
             RectTransform pageTxtRect = pageTxtObj.AddComponent<RectTransform>();
             pageTxtRect.SetParent(navPanel.transform, false);
@@ -344,11 +354,9 @@ namespace tinyWardrobe
             pageIndicatorText = pageTxtObj.AddComponent<TextMeshProUGUI>();
             pageIndicatorText.alignment = TextAlignmentOptions.Center;
             pageIndicatorText.fontSize = 20;
-            pageIndicatorText.font = peakFont;
-            //pageIndicatorText.fontStyle = FontStyles.Bold;
+            pageIndicatorText.font = GetFont();
             pageIndicatorText.color = Color.white;
 
-            // Next Button
             CreateButton(navPanel.transform, "NEXT >", new Vector2(150, 0), new Vector2(120, 40), () => {
                 int maxPages = Mathf.CeilToInt((float)savedPresets.Count / SLOTS_PER_PAGE);
                 if (currentPage < maxPages - 1)
@@ -382,8 +390,7 @@ namespace tinyWardrobe
             TextMeshProUGUI txt = txtObj.AddComponent<TextMeshProUGUI>();
             txt.text = text;
             txt.fontSize = 20;
-            txt.font = peakFont;
-            //txt.fontStyle = FontStyles.Bold;
+            txt.font = GetFont();
             txt.alignment = TextAlignmentOptions.Center;
             txt.color = Color.white;
 
@@ -392,7 +399,6 @@ namespace tinyWardrobe
 
         private void RenderCurrentPage()
         {
-            // Clean up current active UI card elements
             foreach (var card in activeCardObjects)
             {
                 if (card != null) Destroy(card);
@@ -413,7 +419,6 @@ namespace tinyWardrobe
                 pageIndicatorText.text = $"Page {currentPage + 1} / {totalPages}";
             }
 
-            // 2 Rows x 4 Columns
             float[] xPositions = { -375f, -125f, 125f, 375f };
             float[] yPositions = { 180f, -100f };
 
@@ -482,18 +487,13 @@ namespace tinyWardrobe
             GameObject maskObj = new GameObject("PortraitMask");
             RectTransform maskRect = maskObj.AddComponent<RectTransform>();
             maskRect.SetParent(cardObj.transform, false);
-
             maskRect.anchorMin = new Vector2(0.06f, 0.06f);
             maskRect.anchorMax = new Vector2(0.94f, 0.94f);
             maskRect.sizeDelta = Vector2.zero;
 
             Image maskImg = maskObj.AddComponent<Image>();
             maskImg.raycastTarget = false;
-            if (maskSprite != null)
-            {
-                maskImg.sprite = maskSprite;
-                maskImg.type = Image.Type.Sliced;
-            }
+            if (maskSprite != null) { maskImg.sprite = maskSprite; maskImg.type = Image.Type.Sliced; }
             maskImages.Add(maskImg);
 
             Mask uiMask = maskObj.AddComponent<Mask>();
@@ -512,7 +512,6 @@ namespace tinyWardrobe
             RenderTexture rt = new RenderTexture(210, 230, 16);
             savedTextures.Add(rt);
 
-            // Label InputField directly attached below card bounds
             GameObject inputObj = new GameObject("SlotNameInput");
             RectTransform inputRect = inputObj.AddComponent<RectTransform>();
             inputRect.SetParent(cardObj.transform, false);
@@ -529,14 +528,12 @@ namespace tinyWardrobe
             TextMeshProUGUI inputText = textObj.AddComponent<TextMeshProUGUI>();
             inputText.alignment = TextAlignmentOptions.Center;
             inputText.fontSize = 18;
-            inputText.font = peakFont;
-            //inputText.fontStyle = FontStyles.Bold;
+            inputText.font = GetFont();
             inputText.color = Color.white;
 
             inputField.textComponent = inputText;
             inputField.text = string.IsNullOrEmpty(savedPresets[globalIndex].customName) ? $"Slot {globalIndex + 1}" : savedPresets[globalIndex].customName;
 
-            // Update isTyping state dynamically when selected/deselected
             inputField.onSelect.AddListener((_) => {
                 inputField.text = "";
                 isTyping = true;
@@ -567,6 +564,10 @@ namespace tinyWardrobe
             RectTransform mainRect = playerListPanel.AddComponent<RectTransform>();
             mainRect.SetParent(parent, false);
             mainRect.sizeDelta = new Vector2(350, 500);
+
+            mainRect.anchorMin = new Vector2(0.5f, 0.5f);
+            mainRect.anchorMax = new Vector2(0.5f, 0.5f);
+            mainRect.pivot = new Vector2(0.5f, 0.5f);
             mainRect.anchoredPosition = Vector2.zero;
 
             Image bg = playerListPanel.AddComponent<Image>();
@@ -587,8 +588,7 @@ namespace tinyWardrobe
             TextMeshProUGUI headerTxt = headerObj.AddComponent<TextMeshProUGUI>();
             headerTxt.text = "SELECT PLAYER TO COPY";
             headerTxt.fontSize = 16;
-            headerTxt.font = peakFont;
-            //headerTxt.fontStyle = FontStyles.Bold;
+            headerTxt.font = GetFont();
             headerTxt.alignment = TextAlignmentOptions.Center;
             headerTxt.color = Color.yellow;
 
@@ -645,7 +645,7 @@ namespace tinyWardrobe
             TextMeshProUGUI closeTxt = closeTxtObj.AddComponent<TextMeshProUGUI>();
             closeTxt.text = "X";
             closeTxt.fontSize = 14;
-            closeTxt.font = peakFont;
+            closeTxt.font = GetFont();
             closeTxt.alignment = TextAlignmentOptions.Center;
             closeTxt.color = Color.white;
 
@@ -678,11 +678,7 @@ namespace tinyWardrobe
                 Image btnImg = btnObj.AddComponent<Image>();
                 btnImg.color = new Color(0.25f, 0.25f, 0.25f, 1f);
                 btnImg.raycastTarget = true;
-                if (cardSprite != null)
-                {
-                    btnImg.sprite = cardSprite;
-                    btnImg.type = Image.Type.Sliced;
-                }
+                if (cardSprite != null) { btnImg.sprite = cardSprite; btnImg.type = Image.Type.Sliced; }
 
                 Button btn = btnObj.AddComponent<Button>();
                 btn.onClick.AddListener(() => {
@@ -699,7 +695,7 @@ namespace tinyWardrobe
                 TextMeshProUGUI btnText = textObj.AddComponent<TextMeshProUGUI>();
                 btnText.text = targetPlayer.IsLocal ? $"{targetPlayer.NickName} (You)" : targetPlayer.NickName;
                 btnText.fontSize = 16;
-                btnText.font = peakFont;
+                btnText.font = GetFont();
                 btnText.alignment = TextAlignmentOptions.Center;
                 btnText.color = Color.white;
             }
@@ -738,7 +734,6 @@ namespace tinyWardrobe
             savedPresets[slotIndex].outfit = playerData.customizationData.currentOutfit;
             savedPresets[slotIndex].hat = playerData.customizationData.currentHat;
             savedPresets[slotIndex].sash = playerData.customizationData.currentSash;
-
             savedPresets[slotIndex].badgeData = new bool[0];
 
             Character targetChar = GetCharacterFromPlayer(targetPlayer);
@@ -753,7 +748,6 @@ namespace tinyWardrobe
             SavePresetsToConfig();
             RenderCurrentPage();
             Log.LogInfo($"Successfully cloned and saved {targetPlayer.NickName}'s appearance layout into Slot {slotIndex + 1}!");
-            Log.LogInfo($"STEAMID: {PlayerSteamIdExtensions.GetSteamId64(targetPlayer)}");
         }
 
         private void SaveCurrentOutfitToPreset(int index)
@@ -786,11 +780,11 @@ namespace tinyWardrobe
             Log.LogInfo($"Saved current outfit configuration to Slot {index + 1}");
         }
 
-        private void EquipPreset(int index)
+        public void EquipPreset(int index)
         {
-            if (!savedPresets[index].hasData)
+            if (index < 0 || index >= savedPresets.Count || !savedPresets[index].hasData)
             {
-                Log.LogWarning($"Slot {index + 1} is empty!");
+                Log.LogWarning($"Slot {index + 1} is empty or out of bounds!");
                 return;
             }
 
@@ -858,29 +852,37 @@ namespace tinyWardrobe
 
         private void GenerateAllThumbnailsImmediate()
         {
-            SetupRenderRig();
-
-            if (rigCamera == null)
-            {
-                Log.LogWarning("Render studio camera failed initialization.");
-                return;
-            }
-
-            PersistentPlayerData playerData = GameHandler.GetService<PersistentPlayerDataService>().GetPlayerData(PhotonNetwork.LocalPlayer);
+            PersistentPlayerData playerData = GameHandler.GetService<PersistentPlayerDataService>()?.GetPlayerData(PhotonNetwork.LocalPlayer);
             OutfitPreset originalLook = new OutfitPreset();
             bool gotOriginalLook = false;
 
             if (playerData != null && playerData.customizationData != null)
             {
-                originalLook.skin = playerData.customizationData.currentSkin;
-                originalLook.eyes = playerData.customizationData.currentEyes;
-                originalLook.mouth = playerData.customizationData.currentMouth;
-                originalLook.accessory = playerData.customizationData.currentAccessory;
-                originalLook.outfit = playerData.customizationData.currentOutfit;
-                originalLook.hat = playerData.customizationData.currentHat;
-                originalLook.sash = playerData.customizationData.currentSash;
-                gotOriginalLook = true;
+                // RED DUMMY FIX: Only accept data if player customization is valid and non-zero
+                if (playerData.customizationData.currentSkin != 0 ||
+                    playerData.customizationData.currentOutfit != 0 ||
+                    playerData.customizationData.currentHat != 0 ||
+                    playerData.customizationData.currentEyes != 0)
+                {
+                    originalLook.skin = playerData.customizationData.currentSkin;
+                    originalLook.eyes = playerData.customizationData.currentEyes;
+                    originalLook.mouth = playerData.customizationData.currentMouth;
+                    originalLook.accessory = playerData.customizationData.currentAccessory;
+                    originalLook.outfit = playerData.customizationData.currentOutfit;
+                    originalLook.hat = playerData.customizationData.currentHat;
+                    originalLook.sash = playerData.customizationData.currentSash;
+                    gotOriginalLook = true;
+                }
             }
+
+            if (!gotOriginalLook)
+            {
+                Log.LogWarning("[tinyWardrobe] Local player customization data not ready or uninitialized (0,0,0,0). Postponing thumbnail rendering.");
+                return;
+            }
+
+            SetupRenderRig();
+            if (rigCamera == null) return;
 
             int startIndex = currentPage * SLOTS_PER_PAGE;
 
@@ -919,16 +921,14 @@ namespace tinyWardrobe
 
             rigCamera.targetTexture = null;
 
-            if (gotOriginalLook)
-            {
-                CharacterCustomization.SetCharacterSkinColor(originalLook.skin);
-                CharacterCustomization.SetCharacterEyes(originalLook.eyes);
-                CharacterCustomization.SetCharacterMouth(originalLook.mouth);
-                CharacterCustomization.SetCharacterAccessory(originalLook.accessory);
-                CharacterCustomization.SetCharacterOutfit(originalLook.outfit);
-                CharacterCustomization.SetCharacterHat(originalLook.hat);
-                CharacterCustomization.SetCharacterSash(originalLook.sash);
-            }
+            CharacterCustomization.SetCharacterSkinColor(originalLook.skin);
+            CharacterCustomization.SetCharacterEyes(originalLook.eyes);
+            CharacterCustomization.SetCharacterMouth(originalLook.mouth);
+            CharacterCustomization.SetCharacterAccessory(originalLook.accessory);
+            CharacterCustomization.SetCharacterOutfit(originalLook.outfit);
+            CharacterCustomization.SetCharacterHat(originalLook.hat);
+            CharacterCustomization.SetCharacterSash(originalLook.sash);
+            PassportManager.instance.dummy.UpdateDummy(null);
         }
 
         private void ApplyCustomizationValues(PlayerCustomizationDummy dummyComp, OutfitPreset preset)
