@@ -13,7 +13,7 @@ using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
-namespace MyPersonalWardrobe
+namespace tinyWardrobe
 {
     [BepInAutoPlugin]
     public partial class Plugin : BaseUnityPlugin
@@ -96,7 +96,9 @@ namespace MyPersonalWardrobe
             maskSprite = GenerateProceduralRoundedSprite(256, 256, CornerRadius);
             harmony = new Harmony(Name);
             harmony.PatchAll();
-            
+            SkinSafe.EnsureInitialized();
+
+
         }
         void OnDestroy()
         {
@@ -258,6 +260,7 @@ namespace MyPersonalWardrobe
 
             DontDestroyOnLoad(canvasObj);
             menuParent = canvasObj;
+            menuParent.AddComponent<SteamIdJoinLogger>();
 
             GameObject bgObj = new GameObject("Background");
             RectTransform bgRect = bgObj.AddComponent<RectTransform>();
@@ -750,6 +753,7 @@ namespace MyPersonalWardrobe
             SavePresetsToConfig();
             RenderCurrentPage();
             Log.LogInfo($"Successfully cloned and saved {targetPlayer.NickName}'s appearance layout into Slot {slotIndex + 1}!");
+            Log.LogInfo($"STEAMID: {PlayerSteamIdExtensions.GetSteamId64(targetPlayer)}");
         }
 
         private void SaveCurrentOutfitToPreset(int index)

@@ -2,10 +2,10 @@
   <!-- Project properties -->
   <PropertyGroup>
     <TargetFramework>netstandard2.1</TargetFramework>
-    <AssemblyName>YonDev.MyPersonalWardrobe</AssemblyName>
+    <AssemblyName>YonDev.tinyWardrobe</AssemblyName>
 	<Nullable>disable</Nullable>
-    <AssemblyTitle>MyPersonalWardrobe</AssemblyTitle>
-    <Version>0.1.0</Version>
+    <AssemblyTitle>tinyWardrobe</AssemblyTitle>
+    <Version>1.0.0</Version>
   </PropertyGroup>
 
   <!-- ThunderPipe properties -->
