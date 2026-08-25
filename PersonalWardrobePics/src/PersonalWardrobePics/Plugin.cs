@@ -599,6 +599,7 @@ namespace tinyWardrobe
             scrollRect.sizeDelta = new Vector2(320, 400);
 
             ScrollRect scrollRectComp = scrollObj.AddComponent<ScrollRect>();
+            scrollRectComp.scrollSensitivity = 40f;
             scrollObj.AddComponent<RectMask2D>();
 
             GameObject contentObj = new GameObject("Content");
@@ -858,7 +859,6 @@ namespace tinyWardrobe
 
             if (playerData != null && playerData.customizationData != null)
             {
-                // RED DUMMY FIX: Only accept data if player customization is valid and non-zero
                 if (playerData.customizationData.currentSkin != 0 ||
                     playerData.customizationData.currentOutfit != 0 ||
                     playerData.customizationData.currentHat != 0 ||
@@ -877,8 +877,8 @@ namespace tinyWardrobe
 
             if (!gotOriginalLook)
             {
-                Log.LogWarning("[tinyWardrobe] Local player customization data not ready or uninitialized (0,0,0,0). Postponing thumbnail rendering.");
-                return;
+                // Removed the return abort here. It will now proceed even if you are the default character.
+                Log.LogWarning("[tinyWardrobe] Local player customization data not ready or uninitialized (0,0,0,0). Proceeding without aborting.");
             }
 
             SetupRenderRig();
@@ -921,6 +921,7 @@ namespace tinyWardrobe
 
             rigCamera.targetTexture = null;
 
+            // Restore the global variables
             CharacterCustomization.SetCharacterSkinColor(originalLook.skin);
             CharacterCustomization.SetCharacterEyes(originalLook.eyes);
             CharacterCustomization.SetCharacterMouth(originalLook.mouth);
@@ -928,7 +929,12 @@ namespace tinyWardrobe
             CharacterCustomization.SetCharacterOutfit(originalLook.outfit);
             CharacterCustomization.SetCharacterHat(originalLook.hat);
             CharacterCustomization.SetCharacterSash(originalLook.sash);
-            PassportManager.instance.dummy.UpdateDummy(null);
+
+            // FORCE VISUAL REFRESH: Prevents getting stuck as the red dummy or the last preset rendered
+            if (PassportManager.instance != null && PassportManager.instance.dummy != null)
+            {
+                PassportManager.instance.dummy.UpdateDummy(null);
+            }
         }
 
         private void ApplyCustomizationValues(PlayerCustomizationDummy dummyComp, OutfitPreset preset)

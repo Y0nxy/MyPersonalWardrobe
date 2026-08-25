@@ -79,7 +79,6 @@ namespace tinyWardrobe
             EnsureInitialized();
             if (player == null || outfitData == null) return;
 
-            // RED DUMMY FIX: Never cache uninitialized 0 0 0 0 default outfits
             if (outfitData.skin == 0 && outfitData.eyes == 0 && outfitData.mouth == 0 && outfitData.outfit == 0 && outfitData.hat == 0)
             {
                 return;
@@ -109,11 +108,12 @@ namespace tinyWardrobe
             foreach (Photon.Realtime.Player player in PhotonNetwork.PlayerList)
             {
                 if (player == null) continue;
-                if (player == PhotonNetwork.LocalPlayer) continue;
+                if (player == PhotonNetwork.LocalPlayer) continue; // FIXED LOGIC: Was skipping everyone BUT you
+
                 PersistentPlayerData playerData = service.GetPlayerData(player);
                 var cData = playerData?.customizationData;
                 if (cData == null) continue;
-                // RED DUMMY FIX: Verify player data is fully synced before saving
+                
                 if (cData.currentSkin == 0 &&
                     cData.currentOutfit == 0 &&
                     cData.currentHat == 0)
@@ -337,8 +337,51 @@ namespace tinyWardrobe
             phText.color = new Color(0.6f, 0.6f, 0.6f, 0.7f);
             phText.alignment = TextAlignmentOptions.Center;
             searchBar.placeholder = phText;
-
             searchBar.onValueChanged.AddListener((_) => RefreshUIList());
+
+            // --- NEW RANDOM BUTTON ---
+            GameObject rndBtnObj = new GameObject("RandomButton");
+            RectTransform rndRect = rndBtnObj.AddComponent<RectTransform>();
+            rndRect.SetParent(safeUIRoot.transform, false);
+            rndRect.anchoredPosition = new Vector2(185, 240); 
+            rndRect.sizeDelta = new Vector2(30, 30);
+
+            Image rndImgOuter = rndBtnObj.AddComponent<Image>();
+            rndImgOuter.color = Color.cyan; // Cyan border to match title
+
+            GameObject rndInner = new GameObject("Inner");
+            RectTransform rndInnerRect = rndInner.AddComponent<RectTransform>();
+            rndInnerRect.SetParent(rndBtnObj.transform, false);
+            rndInnerRect.anchorMin = Vector2.zero;
+            rndInnerRect.anchorMax = Vector2.one;
+            rndInnerRect.sizeDelta = new Vector2(-4, -4);
+            Image rndInnerImg = rndInner.AddComponent<Image>();
+            rndInnerImg.color = new Color(0.15f, 0.15f, 0.18f);
+
+            Button rndBtn = rndBtnObj.AddComponent<Button>();
+            rndBtn.onClick.AddListener(() => {
+                if (cacheMap.Count > 0) {
+                    List<string> keys = new List<string>(cacheMap.Keys);
+                    string rndKey = keys[UnityEngine.Random.Range(0, keys.Count)];
+                    if (searchBar != null) searchBar.text = rndKey; // Setting this automatically triggers the UI filter
+                    EquipOutfit(cacheMap[rndKey]);
+                }
+            });
+
+            GameObject rndTxtObj = new GameObject("RndText");
+            RectTransform rndTxtRect = rndTxtObj.AddComponent<RectTransform>();
+            rndTxtRect.SetParent(rndBtnObj.transform, false);
+            rndTxtRect.anchorMin = Vector2.zero;
+            rndTxtRect.anchorMax = Vector2.one;
+            rndTxtRect.sizeDelta = Vector2.zero;
+            TextMeshProUGUI rndTxt = rndTxtObj.AddComponent<TextMeshProUGUI>();
+            rndTxt.text = "?";
+            rndTxt.fontSize = 20;
+            rndTxt.font = Plugin.GetFont();
+            rndTxt.color = Color.cyan;
+            rndTxt.alignment = TextAlignmentOptions.Center;
+
+            // --- END NEW RANDOM BUTTON ---
 
             GameObject scrollObj = new GameObject("ScrollView");
             RectTransform scrollRect = scrollObj.AddComponent<RectTransform>();
@@ -347,6 +390,7 @@ namespace tinyWardrobe
             scrollRect.sizeDelta = new Vector2(410, 400);
 
             ScrollRect scrollRectComp = scrollObj.AddComponent<ScrollRect>();
+            scrollRectComp.scrollSensitivity = 40f; // SCROLL WHEEL FIX
             scrollObj.AddComponent<RectMask2D>();
 
             GameObject contentObj = new GameObject("Content");
@@ -430,6 +474,45 @@ namespace tinyWardrobe
                 labelText.font = Plugin.GetFont();
                 labelText.alignment = TextAlignmentOptions.Center;
                 labelText.color = Color.white;
+
+                // --- NEW DELETE BUTTON ---
+                GameObject delBtnObj = new GameObject("DeleteBtn");
+                RectTransform delRect = delBtnObj.AddComponent<RectTransform>();
+                delRect.SetParent(entryObj.transform, false);
+                delRect.anchoredPosition = new Vector2(-170, 0); // Positioned inside the left edge
+                delRect.sizeDelta = new Vector2(24, 24);
+
+                Image delImgOuter = delBtnObj.AddComponent<Image>();
+                delImgOuter.color = new Color(0.8f, 0.2f, 0.2f); // The red border
+
+                GameObject delInner = new GameObject("Inner");
+                RectTransform innerRect = delInner.AddComponent<RectTransform>();
+                innerRect.SetParent(delBtnObj.transform, false);
+                innerRect.anchorMin = Vector2.zero;
+                innerRect.anchorMax = Vector2.one;
+                innerRect.sizeDelta = new Vector2(-4, -4); // Insets by 2 pixels to reveal border
+                Image innerImg = delInner.AddComponent<Image>();
+                innerImg.color = new Color(0.12f, 0.12f, 0.12f);
+
+                Button delBtn = delBtnObj.AddComponent<Button>();
+                delBtn.onClick.AddListener(() => {
+                    cacheMap.Remove(steamId);
+                    SaveCache();
+                    RefreshUIList();
+                });
+
+                GameObject delTxtObj = new GameObject("Text");
+                RectTransform delTxtRect = delTxtObj.AddComponent<RectTransform>();
+                delTxtRect.SetParent(delBtnObj.transform, false);
+                delTxtRect.anchorMin = Vector2.zero;
+                delTxtRect.anchorMax = Vector2.one;
+                delTxtRect.sizeDelta = Vector2.zero;
+                TextMeshProUGUI delTxt = delTxtObj.AddComponent<TextMeshProUGUI>();
+                delTxt.text = "X";
+                delTxt.fontSize = 16;
+                delTxt.font = Plugin.GetFont();
+                delTxt.color = new Color(0.8f, 0.2f, 0.2f);
+                delTxt.alignment = TextAlignmentOptions.Center;
             }
         }
     }
@@ -444,7 +527,8 @@ namespace tinyWardrobe
 
             PhotonView view = __instance.GetComponent<PhotonView>();
             Photon.Realtime.Player targetPlayer = (view != null) ? view.Owner : __instance.overridePhotonPlayer;
-            if (targetPlayer == null || view?.Owner == PhotonNetwork.LocalPlayer) return;
+            if (targetPlayer == null) return;
+
             SkinSafe.SavedOutfitData outfit = new SkinSafe.SavedOutfitData
             {
                 nickName = targetPlayer.NickName,
@@ -458,17 +542,11 @@ namespace tinyWardrobe
                 hasData = true
             };
 
-            Character character = __instance.GetComponent<Character>();
-            if (character != null && character.data != null && character.data.badgeStatus != null)
-            {
-                outfit.badgeData = character.data.badgeStatus;
-            }
-
             SkinSafe.CachePlayerOutfit(targetPlayer, outfit);
         }
     }
 
-    [HarmonyPatch(typeof(MonoBehaviourPunCallbacks), nameof(MonoBehaviourPunCallbacks.OnJoinedRoom))]
+    [HarmonyPatch(typeof(MonoBehaviourPunCallbacks), "OnJoinedRoom")]
     public static class SkinSafeLobbyJoinPatch
     {
         [HarmonyPostfix]
