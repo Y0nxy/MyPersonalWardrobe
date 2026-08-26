@@ -33,7 +33,7 @@ namespace tinyWardrobe
         private static Dictionary<string, SavedOutfitData> cacheMap = new Dictionary<string, SavedOutfitData>();
         private static bool isInitialized = false;
 
-        private static GameObject safeUIRoot;
+        public static GameObject safeUIRoot;
         private static TMP_InputField searchBar;
         private static Transform listContent;
         public static bool uiOpen = false;
@@ -113,7 +113,7 @@ namespace tinyWardrobe
                 PersistentPlayerData playerData = service.GetPlayerData(player);
                 var cData = playerData?.customizationData;
                 if (cData == null) continue;
-                
+
                 if (cData.currentSkin == 0 &&
                     cData.currentOutfit == 0 &&
                     cData.currentHat == 0)
@@ -351,7 +351,7 @@ namespace tinyWardrobe
             GameObject rndBtnObj = new GameObject("RandomButton");
             RectTransform rndRect = rndBtnObj.AddComponent<RectTransform>();
             rndRect.SetParent(safeUIRoot.transform, false);
-            rndRect.anchoredPosition = new Vector2(185, 240); 
+            rndRect.anchoredPosition = new Vector2(185, 240);
             rndRect.sizeDelta = new Vector2(30, 30);
 
             Image rndImgOuter = rndBtnObj.AddComponent<Image>();
@@ -368,7 +368,8 @@ namespace tinyWardrobe
 
             Button rndBtn = rndBtnObj.AddComponent<Button>();
             rndBtn.onClick.AddListener(() => {
-                if (cacheMap.Count > 0) {
+                if (cacheMap.Count > 0)
+                {
                     List<string> keys = new List<string>(cacheMap.Keys);
                     string rndKey = keys[UnityEngine.Random.Range(0, keys.Count)];
                     if (searchBar != null) searchBar.text = rndKey; // Setting this automatically triggers the UI filter
@@ -487,7 +488,7 @@ namespace tinyWardrobe
                 GameObject delBtnObj = new GameObject("DeleteBtn");
                 RectTransform delRect = delBtnObj.AddComponent<RectTransform>();
                 delRect.SetParent(entryObj.transform, false);
-                delRect.anchoredPosition = new Vector2(-170, 0); // Positioned inside the left edge
+                delRect.anchoredPosition = new Vector2(186, 7); // Positioned inside the left edge
                 delRect.sizeDelta = new Vector2(24, 24);
 
                 Image delImgOuter = delBtnObj.AddComponent<Image>();
