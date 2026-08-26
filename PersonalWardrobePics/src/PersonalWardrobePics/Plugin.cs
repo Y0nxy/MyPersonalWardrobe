@@ -599,7 +599,7 @@ namespace tinyWardrobe
             scrollRect.sizeDelta = new Vector2(320, 400);
 
             ScrollRect scrollRectComp = scrollObj.AddComponent<ScrollRect>();
-            scrollRectComp.scrollSensitivity = 40f;
+            scrollRectComp.scrollSensitivity = 20f;
             scrollObj.AddComponent<RectMask2D>();
 
             GameObject contentObj = new GameObject("Content");
@@ -705,7 +705,7 @@ namespace tinyWardrobe
             playerListPanel.SetActive(true);
         }
 
-        private Character GetCharacterFromPlayer(Photon.Realtime.Player player)
+        public static Character GetCharacterFromPlayer(Photon.Realtime.Player player)
         {
             if (player == null) return null;
             foreach (Character character in UnityEngine.Object.FindObjectsByType<Character>(FindObjectsSortMode.None))

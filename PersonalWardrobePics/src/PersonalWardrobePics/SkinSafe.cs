@@ -121,6 +121,12 @@ namespace tinyWardrobe
                     continue;
                 }
 
+                Character targetChar = Plugin.GetCharacterFromPlayer(player);
+                bool[] currentBadges = null;
+                if (targetChar?.data != null)
+                {
+                    currentBadges = targetChar.data.badgeStatus;
+                }
                 SavedOutfitData outfit = new SavedOutfitData
                 {
                     nickName = player.NickName,
@@ -131,6 +137,8 @@ namespace tinyWardrobe
                     outfit = cData.currentOutfit,
                     hat = cData.currentHat,
                     sash = cData.currentSash,
+                    badgeData = currentBadges,
+
                     hasData = true
                 };
 
@@ -390,7 +398,7 @@ namespace tinyWardrobe
             scrollRect.sizeDelta = new Vector2(410, 400);
 
             ScrollRect scrollRectComp = scrollObj.AddComponent<ScrollRect>();
-            scrollRectComp.scrollSensitivity = 40f; // SCROLL WHEEL FIX
+            scrollRectComp.scrollSensitivity = 20f; // SCROLL WHEEL FIX
             scrollObj.AddComponent<RectMask2D>();
 
             GameObject contentObj = new GameObject("Content");
