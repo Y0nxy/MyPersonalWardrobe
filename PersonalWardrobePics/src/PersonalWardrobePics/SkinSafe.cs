@@ -520,7 +520,8 @@ namespace tinyWardrobe
                 delTxt.fontSize = 16;
                 delTxt.font = Plugin.GetFont();
                 delTxt.color = new Color(0.8f, 0.2f, 0.2f);
-                delTxt.alignment = TextAlignmentOptions.Center;
+                delTxt.alignment = TextAlignmentOptions.Midline;
+                delTxt.raycastTarget = false;
             }
         }
     }
@@ -537,6 +538,13 @@ namespace tinyWardrobe
             Photon.Realtime.Player targetPlayer = (view != null) ? view.Owner : __instance.overridePhotonPlayer;
             if (targetPlayer == null) return;
 
+            Character targetChar = __instance._character;
+            bool[] currentBadges = null;
+            if (targetChar?.data != null)
+            {
+                currentBadges = targetChar.data.badgeStatus;
+            }
+
             SkinSafe.SavedOutfitData outfit = new SkinSafe.SavedOutfitData
             {
                 nickName = targetPlayer.NickName,
@@ -547,6 +555,7 @@ namespace tinyWardrobe
                 outfit = playerData.customizationData.currentOutfit,
                 hat = playerData.customizationData.currentHat,
                 sash = playerData.customizationData.currentSash,
+                badgeData = currentBadges,
                 hasData = true
             };
 
