@@ -27,10 +27,15 @@ namespace tinyWardrobe
             public int hat;
             public int sash;
             public bool[] badgeData = new bool[0];
+            public int medal;
             public bool hasData = true;
         }
 
         private static Dictionary<string, SavedOutfitData> cacheMap = new Dictionary<string, SavedOutfitData>();
+
+        private static HashSet<string> currentLobbyPlayers = new HashSet<string>();
+        private static bool filterCurrentLobbyOnly = false;
+
         private static bool isInitialized = false;
 
         public static GameObject safeUIRoot;
@@ -74,6 +79,11 @@ namespace tinyWardrobe
             return !string.IsNullOrEmpty(player.UserId) ? player.UserId : $"Actor_{player.ActorNumber}";
         }
 
+        public static void ClearLobbyTracking()
+        {
+            currentLobbyPlayers.Clear();
+        }
+
         public static void CachePlayerOutfit(Photon.Realtime.Player player, SavedOutfitData outfitData)
         {
             EnsureInitialized();
@@ -86,6 +96,11 @@ namespace tinyWardrobe
 
             string steamIdStr = GetSteamId(player);
             if (string.IsNullOrEmpty(steamIdStr)) return;
+
+            if (PhotonNetwork.InRoom)
+            {
+                currentLobbyPlayers.Add(steamIdStr);
+            }
 
             if (outfitData.badgeData == null) outfitData.badgeData = new bool[0];
             outfitData.nickName = string.IsNullOrEmpty(player.NickName) ? "Unknown Player" : player.NickName;
@@ -108,7 +123,7 @@ namespace tinyWardrobe
             foreach (Photon.Realtime.Player player in PhotonNetwork.PlayerList)
             {
                 if (player == null) continue;
-                if (player == PhotonNetwork.LocalPlayer) continue; // FIXED LOGIC: Was skipping everyone BUT you
+                if (player == PhotonNetwork.LocalPlayer) continue;
 
                 PersistentPlayerData playerData = service.GetPlayerData(player);
                 var cData = playerData?.customizationData;
@@ -138,6 +153,7 @@ namespace tinyWardrobe
                     hat = cData.currentHat,
                     sash = cData.currentSash,
                     badgeData = currentBadges,
+                    medal = cData.currentMedal,
 
                     hasData = true
                 };
@@ -247,6 +263,7 @@ namespace tinyWardrobe
             CharacterCustomization.SetCharacterOutfit(preset.outfit);
             CharacterCustomization.SetCharacterHat(preset.hat);
             CharacterCustomization.SetCharacterSash(preset.sash);
+            CharacterCustomization.SetCharacterMedal(preset.medal);
 
             if (preset.badgeData != null && preset.badgeData.Length > 0 && Character.localCharacter != null && Character.localCharacter.photonView != null)
             {
@@ -347,7 +364,47 @@ namespace tinyWardrobe
             searchBar.placeholder = phText;
             searchBar.onValueChanged.AddListener((_) => RefreshUIList());
 
-            // --- NEW RANDOM BUTTON ---
+            // --- LOBBY FILTER BUTTON ---
+            GameObject lobbyBtnObj = new GameObject("LobbyFilterButton");
+            RectTransform lobbyRect = lobbyBtnObj.AddComponent<RectTransform>();
+            lobbyRect.SetParent(safeUIRoot.transform, false);
+            lobbyRect.anchoredPosition = new Vector2(-185, 240);
+            lobbyRect.sizeDelta = new Vector2(30, 30);
+
+            Image lobbyImgOuter = lobbyBtnObj.AddComponent<Image>();
+            lobbyImgOuter.color = filterCurrentLobbyOnly ? Color.green : Color.cyan;
+
+            GameObject lobbyInner = new GameObject("Inner");
+            RectTransform lobbyInnerRect = lobbyInner.AddComponent<RectTransform>();
+            lobbyInnerRect.SetParent(lobbyBtnObj.transform, false);
+            lobbyInnerRect.anchorMin = Vector2.zero;
+            lobbyInnerRect.anchorMax = Vector2.one;
+            lobbyInnerRect.sizeDelta = new Vector2(-4, -4);
+            Image lobbyInnerImg = lobbyInner.AddComponent<Image>();
+            lobbyInnerImg.color = new Color(0.15f, 0.15f, 0.18f);
+
+            GameObject lobbyTxtObj = new GameObject("LobbyText");
+            RectTransform lobbyTxtRect = lobbyTxtObj.AddComponent<RectTransform>();
+            lobbyTxtRect.SetParent(lobbyBtnObj.transform, false);
+            lobbyTxtRect.anchorMin = Vector2.zero;
+            lobbyTxtRect.anchorMax = Vector2.one;
+            lobbyTxtRect.sizeDelta = Vector2.zero;
+            TextMeshProUGUI lobbyTxt = lobbyTxtObj.AddComponent<TextMeshProUGUI>();
+            lobbyTxt.text = "L";
+            lobbyTxt.fontSize = 20;
+            lobbyTxt.font = Plugin.GetFont();
+            lobbyTxt.color = filterCurrentLobbyOnly ? Color.green : Color.cyan;
+            lobbyTxt.alignment = TextAlignmentOptions.Center;
+
+            Button lobbyBtn = lobbyBtnObj.AddComponent<Button>();
+            lobbyBtn.onClick.AddListener(() => {
+                filterCurrentLobbyOnly = !filterCurrentLobbyOnly;
+                lobbyImgOuter.color = filterCurrentLobbyOnly ? Color.green : Color.cyan;
+                lobbyTxt.color = filterCurrentLobbyOnly ? Color.green : Color.cyan;
+                RefreshUIList();
+            });
+
+            // --- RANDOM BUTTON ---
             GameObject rndBtnObj = new GameObject("RandomButton");
             RectTransform rndRect = rndBtnObj.AddComponent<RectTransform>();
             rndRect.SetParent(safeUIRoot.transform, false);
@@ -355,7 +412,7 @@ namespace tinyWardrobe
             rndRect.sizeDelta = new Vector2(30, 30);
 
             Image rndImgOuter = rndBtnObj.AddComponent<Image>();
-            rndImgOuter.color = Color.cyan; // Cyan border to match title
+            rndImgOuter.color = Color.cyan;
 
             GameObject rndInner = new GameObject("Inner");
             RectTransform rndInnerRect = rndInner.AddComponent<RectTransform>();
@@ -368,11 +425,27 @@ namespace tinyWardrobe
 
             Button rndBtn = rndBtnObj.AddComponent<Button>();
             rndBtn.onClick.AddListener(() => {
-                if (cacheMap.Count > 0)
+                List<string> validKeys = new List<string>();
+
+                if (filterCurrentLobbyOnly)
                 {
-                    List<string> keys = new List<string>(cacheMap.Keys);
-                    string rndKey = keys[UnityEngine.Random.Range(0, keys.Count)];
-                    if (searchBar != null) searchBar.text = rndKey; // Setting this automatically triggers the UI filter
+                    foreach (string lobbyId in currentLobbyPlayers)
+                    {
+                        if (cacheMap.ContainsKey(lobbyId))
+                        {
+                            validKeys.Add(lobbyId);
+                        }
+                    }
+                }
+                else
+                {
+                    validKeys.AddRange(cacheMap.Keys);
+                }
+
+                if (validKeys.Count > 0)
+                {
+                    string rndKey = validKeys[UnityEngine.Random.Range(0, validKeys.Count)];
+                    if (searchBar != null) searchBar.text = rndKey; // Setting this triggers UI filter to scroll to them
                     EquipOutfit(cacheMap[rndKey]);
                 }
             });
@@ -389,8 +462,7 @@ namespace tinyWardrobe
             rndTxt.font = Plugin.GetFont();
             rndTxt.color = Color.cyan;
             rndTxt.alignment = TextAlignmentOptions.Center;
-
-            // --- END NEW RANDOM BUTTON ---
+            // --- END RANDOM BUTTON ---
 
             GameObject scrollObj = new GameObject("ScrollView");
             RectTransform scrollRect = scrollObj.AddComponent<RectTransform>();
@@ -399,7 +471,7 @@ namespace tinyWardrobe
             scrollRect.sizeDelta = new Vector2(410, 400);
 
             ScrollRect scrollRectComp = scrollObj.AddComponent<ScrollRect>();
-            scrollRectComp.scrollSensitivity = 20f; // SCROLL WHEEL FIX
+            scrollRectComp.scrollSensitivity = 20f;
             scrollObj.AddComponent<RectMask2D>();
 
             GameObject contentObj = new GameObject("Content");
@@ -441,6 +513,12 @@ namespace tinyWardrobe
             {
                 string steamId = kvp.Key;
                 SavedOutfitData data = kvp.Value;
+
+                if (filterCurrentLobbyOnly && !currentLobbyPlayers.Contains(steamId))
+                {
+                    continue;
+                }
+
                 string cleanName = Regex.Replace(data.nickName.ToLower(), @"</?color(=\w+|=[#\w]+)?>", string.Empty, RegexOptions.IgnoreCase);
                 if (!string.IsNullOrEmpty(filter) &&
                     !cleanName.Contains(filter) &&
@@ -484,22 +562,21 @@ namespace tinyWardrobe
                 labelText.alignment = TextAlignmentOptions.Center;
                 labelText.color = Color.white;
 
-                // --- NEW DELETE BUTTON ---
                 GameObject delBtnObj = new GameObject("DeleteBtn");
                 RectTransform delRect = delBtnObj.AddComponent<RectTransform>();
                 delRect.SetParent(entryObj.transform, false);
-                delRect.anchoredPosition = new Vector2(186, 7); // Positioned inside the left edge
+                delRect.anchoredPosition = new Vector2(186, 7);
                 delRect.sizeDelta = new Vector2(24, 24);
 
                 Image delImgOuter = delBtnObj.AddComponent<Image>();
-                delImgOuter.color = new Color(0.8f, 0.2f, 0.2f); // The red border
+                delImgOuter.color = new Color(0.8f, 0.2f, 0.2f);
 
                 GameObject delInner = new GameObject("Inner");
                 RectTransform innerRect = delInner.AddComponent<RectTransform>();
                 innerRect.SetParent(delBtnObj.transform, false);
                 innerRect.anchorMin = Vector2.zero;
                 innerRect.anchorMax = Vector2.one;
-                innerRect.sizeDelta = new Vector2(-4, -4); // Insets by 2 pixels to reveal border
+                innerRect.sizeDelta = new Vector2(-4, -4);
                 Image innerImg = delInner.AddComponent<Image>();
                 innerImg.color = new Color(0.12f, 0.12f, 0.12f);
 
@@ -570,6 +647,7 @@ namespace tinyWardrobe
         [HarmonyPostfix]
         public static void Postfix()
         {
+            SkinSafe.ClearLobbyTracking();
             SkinSafe.SaveAllLobbyPlayers();
         }
     }
