@@ -12,6 +12,7 @@ using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
+using Zorro.Core;
 
 namespace tinyWardrobe
 {
@@ -998,21 +999,41 @@ namespace tinyWardrobe
             }
         }
 
-        private void ApplyCustomizationValues(PlayerCustomizationDummy dummyComp, OutfitPreset preset)
+        public void ApplyCustomizationValues(PlayerCustomizationDummy dummyComp, OutfitPreset preset)
         {
-            CharacterCustomization.SetCharacterSkinColor(preset.skin);
-            CharacterCustomization.SetCharacterEyes(preset.eyes);
-            CharacterCustomization.SetCharacterMouth(preset.mouth);
-            CharacterCustomization.SetCharacterAccessory(preset.accessory);
-            CharacterCustomization.SetCharacterOutfit(preset.outfit);
-            CharacterCustomization.SetCharacterHat(preset.hat);
-            CharacterCustomization.SetCharacterSash(preset.sash);
-
-            if (dummyComp != null)
+            dummyComp.SetPlayerColor(preset.skin);
+            int fitIndex = preset.outfit;
+            dummyComp.SetPlayerCostume(fitIndex);
+            int num = preset.hat;
+            if (Singleton<Customization>.Instance.fits[fitIndex].overrideHat)
             {
-                dummyComp.UpdateDummy(null);
+                num = Singleton<Customization>.Instance.fits[fitIndex].overrideHatIndex;
             }
+            dummyComp.SetPlayerHat(num);
+            int eyesIndex = preset.eyes;
+            for (int i = 0; i < dummyComp.refs.EyeRenderers.Length; i++)
+            {
+                dummyComp.refs.EyeRenderers[i].material.SetTexture(PlayerCustomizationDummy.MainTex, Singleton<Customization>.Instance.eyes[eyesIndex].texture);
+            }
+            int accessoryIndex = preset.accessory;
+            dummyComp.refs.accessoryRenderer.material.SetTexture(PlayerCustomizationDummy.MainTex, Singleton<Customization>.Instance.accessories[accessoryIndex].texture);
+            dummyComp.refs.accessoryRenderer.material.renderQueue = (Singleton<Customization>.Instance.accessories[accessoryIndex].drawUnderEye ? 3007 : 3009);
+            dummyComp.refs.accessoryEnabled = !Singleton<Customization>.Instance.accessories[accessoryIndex].isThirdEye;
+            dummyComp.refs.thirdEye.gameObject.SetActive(Singleton<Customization>.Instance.accessories[accessoryIndex].isThirdEye);
+            dummyComp.refs.mouthRenderer.material.SetTexture(PlayerCustomizationDummy.MainTex, Singleton<Customization>.Instance.mouths[preset.mouth].texture);
+            List<Material> list = new List<Material>();
+            list.Add(dummyComp.refs.sashRenderer.materials[0]);
+            int num2 = preset.sash;
+            if (num2 >= dummyComp.refs.sashAscentMaterials.Length)
+            {
+                num2 = dummyComp.refs.sashAscentMaterials.Length - 1;
+            }
+            list.Add(dummyComp.refs.sashAscentMaterials[num2]);
+            int medalIndex = 0;
+            dummyComp.refs.medalRenderer.gameObject.SetActive(medalIndex == 1);
+            dummyComp.refs.sashRenderer.SetMaterials(list);
         }
+
 
         private void UpdateBorders()
         {
