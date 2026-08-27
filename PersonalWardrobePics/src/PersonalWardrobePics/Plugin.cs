@@ -5,13 +5,16 @@ using HarmonyLib;
 using Photon.Pun;
 using Photon.Realtime;
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Text;
 using TextChatCommands;
 using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.SceneManagement;
 using UnityEngine.UI;
+using Zorro.Core;
 
 namespace tinyWardrobe
 {
@@ -35,9 +38,12 @@ namespace tinyWardrobe
         private List<TMP_InputField> slotNameInputs = new List<TMP_InputField>();
         private List<GameObject> activeCardObjects = new List<GameObject>();
 
-        // --- CACHE VARIABLES ---
+        // --- CACHE & ASYNC VARIABLES ---
         private Dictionary<int, Texture2D> thumbnailCache = new Dictionary<int, Texture2D>();
         private RenderTexture tempRenderTex;
+        private Queue<int> thumbnailRenderQueue = new Queue<int>();
+        private bool isRenderingThumbnails = false;
+        private bool hasPreloadedThumbnails = false;
 
         private int currentPage = 0;
         private int selectedLoadout = 0;
@@ -62,6 +68,7 @@ namespace tinyWardrobe
             public int hat;
             public int sash;
             public bool[] badgeData = new bool[0];
+            public int medal;
             public bool hasData;
         }
 
@@ -105,9 +112,20 @@ namespace tinyWardrobe
 
             cardSprite = GenerateProceduralRoundedSprite(256, 256, CornerRadius);
             maskSprite = GenerateProceduralRoundedSprite(256, 256, CornerRadius);
+            SceneManager.sceneLoaded += (Scene, _) => StartCoroutine(SceneLoaded(Scene));
             harmony = new Harmony(Name);
             harmony.PatchAll();
             SkinSafe.EnsureInitialized();
+        }
+
+        IEnumerator SceneLoaded(Scene scene)
+        {
+            if (scene.name != "Airpor") yield break;
+            if (menuParent != null) yield break;
+            yield return new WaitForSeconds(5f);
+            Plugin.Instance.CreateWardrobeUI();
+            Log.LogInfo("Trying to load everything, Scene no longer catching");
+            SceneManager.sceneLoaded -= (Scene, _) => StartCoroutine(SceneLoaded(Scene));
         }
 
         void OnDestroy()
@@ -130,10 +148,10 @@ namespace tinyWardrobe
             if (SkinSafe.safeUIRoot != null)
                 Destroy(SkinSafe.safeUIRoot);
         }
-
-        [HarmonyPatch(typeof(GUIManager), "UpdateWindowStatus")]
-        public static class patch
+        [HarmonyPatch]
+        public static class Patches
         {
+            [HarmonyPatch(typeof(GUIManager), "UpdateWindowStatus")]
             [HarmonyPostfix]
             public static void UpdateWindowStatusPatch(GUIManager __instance)
             {
@@ -163,19 +181,30 @@ namespace tinyWardrobe
 
         private void Update()
         {
-            if (Input.GetKeyDown(toggleKeyConfig.Value))
+            bool pressedEsc = Input.GetKeyDown(KeyCode.Escape);
+            if (!Input.GetKeyDown(toggleKeyConfig.Value) && !pressedEsc)
+                return;
+            if (pressedEsc)
             {
-                if (menuParent == null)
+                if (menuParent == null) return;
+                bool isOpen = menuParent.activeSelf;
+                if (isOpen)
                 {
-                    CreateWardrobeUI();
-                    ToggleMenuState(true);
+                    menuParent.SetActive(false);
+                    ToggleMenuState(false);
                 }
-                else
-                {
-                    bool isOpening = !menuParent.activeSelf;
-                    menuParent.SetActive(isOpening);
-                    ToggleMenuState(isOpening);
-                }
+                return;
+            }
+            if (menuParent == null)
+            {
+                CreateWardrobeUI();
+                ToggleMenuState(true);
+            }
+            else
+            {
+                bool isOpening = !menuParent.activeSelf;
+                menuParent.SetActive(isOpening);
+                ToggleMenuState(isOpening);
             }
         }
 
@@ -195,7 +224,21 @@ namespace tinyWardrobe
                 Cursor.lockState = CursorLockMode.None;
                 Cursor.visible = true;
                 blockInput = true;
+                
                 RenderCurrentPage();
+
+                // Start background loading of all textures on first open
+                if (!hasPreloadedThumbnails)
+                {
+                    hasPreloadedThumbnails = true;
+                    for (int i = 0; i < savedPresets.Count; i++)
+                    {
+                        if (savedPresets[i].hasData && !thumbnailCache.ContainsKey(i))
+                        {
+                            EnqueueThumbnailRender(i);
+                        }
+                    }
+                }
 
                 if (SkinSafe.wasOpenBeforeMenuClosed)
                 {
@@ -218,7 +261,13 @@ namespace tinyWardrobe
                 Cursor.visible = false;
                 isTyping = false;
                 blockInput = false;
-                DestroyRenderRig();
+
+                // Don't destroy the render rig if it's currently processing thumbnails in the background
+                if (!isRenderingThumbnails)
+                {
+                    DestroyRenderRig();
+                }
+
                 if (playerListPanel != null) playerListPanel.SetActive(false);
             }
         }
@@ -452,7 +501,7 @@ namespace tinyWardrobe
             }
 
             UpdateBorders();
-            GenerateAllThumbnailsImmediate();
+            RefreshVisibleThumbnails();
             SetUILayerRecursive(menuParent, 5);
         }
 
@@ -486,7 +535,7 @@ namespace tinyWardrobe
                 if (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift))
                 {
                     SaveCurrentOutfitToPreset(globalIndex);
-                    RenderCurrentPage();
+                    RenderCurrentPage(); // Refresh UI to trigger queue generation for the new preset
                 }
                 else
                 {
@@ -748,16 +797,17 @@ namespace tinyWardrobe
                 Log.LogError($"Could not extract network customization data from player: {targetPlayer.NickName}");
                 return;
             }
-
+            var customizationData = playerData.customizationData;
             savedPresets[slotIndex].customName = targetPlayer.NickName;
-            savedPresets[slotIndex].skin = playerData.customizationData.currentSkin;
-            savedPresets[slotIndex].eyes = playerData.customizationData.currentEyes;
-            savedPresets[slotIndex].mouth = playerData.customizationData.currentMouth;
-            savedPresets[slotIndex].accessory = playerData.customizationData.currentAccessory;
-            savedPresets[slotIndex].outfit = playerData.customizationData.currentOutfit;
-            savedPresets[slotIndex].hat = playerData.customizationData.currentHat;
-            savedPresets[slotIndex].sash = playerData.customizationData.currentSash;
+            savedPresets[slotIndex].skin = customizationData.currentSkin;
+            savedPresets[slotIndex].eyes = customizationData.currentEyes;
+            savedPresets[slotIndex].mouth = customizationData.currentMouth;
+            savedPresets[slotIndex].accessory = customizationData.currentAccessory;
+            savedPresets[slotIndex].outfit = customizationData.currentOutfit;
+            savedPresets[slotIndex].hat = customizationData.currentHat;
+            savedPresets[slotIndex].sash = customizationData.currentSash;
             savedPresets[slotIndex].badgeData = new bool[0];
+            savedPresets[slotIndex].medal = customizationData.currentMedal;
 
             Character targetChar = GetCharacterFromPlayer(targetPlayer);
             if (targetChar != null && targetChar.data != null)
@@ -767,7 +817,7 @@ namespace tinyWardrobe
 
             savedPresets[slotIndex].hasData = true;
 
-            InvalidateThumbnailCache(slotIndex); // Clear visual cache for this slot
+            InvalidateThumbnailCache(slotIndex);
             CheckAndExpandSlots(slotIndex);
             SavePresetsToConfig();
             RenderCurrentPage();
@@ -790,6 +840,7 @@ namespace tinyWardrobe
             savedPresets[index].outfit = playerData.customizationData.currentOutfit;
             savedPresets[index].hat = playerData.customizationData.currentHat;
             savedPresets[index].sash = playerData.customizationData.currentSash;
+            savedPresets[index].medal = playerData.customizationData.currentMedal;
 
             savedPresets[index].badgeData = new bool[0];
             if (Character.localCharacter != null && Character.localCharacter.data != null)
@@ -799,7 +850,7 @@ namespace tinyWardrobe
 
             savedPresets[index].hasData = true;
 
-            InvalidateThumbnailCache(index); // Clear visual cache for this slot
+            InvalidateThumbnailCache(index);
             CheckAndExpandSlots(index);
             SavePresetsToConfig();
             Log.LogInfo($"Saved current outfit configuration to Slot {index + 1}");
@@ -821,6 +872,7 @@ namespace tinyWardrobe
             CharacterCustomization.SetCharacterOutfit(preset.outfit);
             CharacterCustomization.SetCharacterHat(preset.hat);
             CharacterCustomization.SetCharacterSash(preset.sash);
+            CharacterCustomization.SetCharacterMedal(preset.medal);
 
             if (copyBadgesConfig.Value && Character.localCharacter != null && Character.localCharacter.photonView != null && preset.badgeData != null && preset.badgeData.Length > 0)
             {
@@ -832,6 +884,166 @@ namespace tinyWardrobe
                 PassportManager.instance.dummy.UpdateDummy(null);
             }
             Log.LogInfo($"Equipped Preset Slot {index + 1}!");
+        }
+
+        // --- BACKGROUND RENDERING METHODS ---
+
+        private OutfitPreset GetCurrentPlayerLook()
+        {
+            OutfitPreset originalLook = new OutfitPreset();
+            PersistentPlayerData playerData = GameHandler.GetService<PersistentPlayerDataService>()?.GetPlayerData(PhotonNetwork.LocalPlayer);
+            if (playerData != null && playerData.customizationData != null)
+            {
+                originalLook.skin = playerData.customizationData.currentSkin;
+                originalLook.eyes = playerData.customizationData.currentEyes;
+                originalLook.mouth = playerData.customizationData.currentMouth;
+                originalLook.accessory = playerData.customizationData.currentAccessory;
+                originalLook.outfit = playerData.customizationData.currentOutfit;
+                originalLook.hat = playerData.customizationData.currentHat;
+                originalLook.sash = playerData.customizationData.currentSash;
+                originalLook.medal = playerData.customizationData.currentMedal;
+                originalLook.hasData = true;
+            }
+            return originalLook;
+        }
+
+        private void RestorePlayerLook(OutfitPreset look)
+        {
+            if (!look.hasData) return;
+            if (rigCamera != null) rigCamera.targetTexture = null;
+
+            CharacterCustomization.SetCharacterSkinColor(look.skin);
+            CharacterCustomization.SetCharacterEyes(look.eyes);
+            CharacterCustomization.SetCharacterMouth(look.mouth);
+            CharacterCustomization.SetCharacterAccessory(look.accessory);
+            CharacterCustomization.SetCharacterOutfit(look.outfit);
+            CharacterCustomization.SetCharacterHat(look.hat);
+            CharacterCustomization.SetCharacterSash(look.sash);
+            CharacterCustomization.SetCharacterMedal(look.medal);
+
+            if (PassportManager.instance != null && PassportManager.instance.dummy != null)
+            {
+                PassportManager.instance.dummy.UpdateDummy(null);
+            }
+        }
+
+        private void RefreshVisibleThumbnails()
+        {
+            int startIndex = currentPage * SLOTS_PER_PAGE;
+            for (int i = 0; i < portraitImages.Count; i++)
+            {
+                int globalIndex = startIndex + i;
+                if (globalIndex >= savedPresets.Count) break;
+
+                if (!savedPresets[globalIndex].hasData)
+                {
+                    portraitImages[i].texture = null;
+                    portraitImages[i].color = new Color(0.2f, 0.2f, 0.2f, 1f);
+                }
+                else if (thumbnailCache.TryGetValue(globalIndex, out Texture2D cachedTex) && cachedTex != null)
+                {
+                    // Image is ready, slot it in immediately
+                    portraitImages[i].texture = cachedTex;
+                    portraitImages[i].color = Color.white;
+                }
+                else
+                {
+                    // Image is missing but data exists. Queue it and set a loading state.
+                    portraitImages[i].texture = null;
+                    portraitImages[i].color = new Color(0.35f, 0.35f, 0.35f, 1f); // Gray indicator for pending logic
+                    EnqueueThumbnailRender(globalIndex);
+                }
+            }
+        }
+
+        private void EnqueueThumbnailRender(int index)
+        {
+            if (!thumbnailRenderQueue.Contains(index))
+            {
+                thumbnailRenderQueue.Enqueue(index);
+            }
+
+            if (!isRenderingThumbnails)
+            {
+                StartCoroutine(ProcessThumbnailQueue());
+            }
+        }
+
+        private IEnumerator ProcessThumbnailQueue()
+        {
+            isRenderingThumbnails = true;
+
+            OutfitPreset originalLook = GetCurrentPlayerLook();
+            SetupRenderRig();
+            if (tempRenderTex == null) tempRenderTex = new RenderTexture(210, 230, 16);
+
+            while (thumbnailRenderQueue.Count > 0)
+            {
+                int globalIndex = thumbnailRenderQueue.Dequeue();
+                
+                if (globalIndex < 0 || globalIndex >= savedPresets.Count || !savedPresets[globalIndex].hasData)
+                    continue;
+
+                // Stop generating if the local player goes missing (e.g. disconnected)
+                if (PassportManager.instance == null || PassportManager.instance.dummy == null || rigCamera == null)
+                {
+                    yield return null; 
+                    continue;
+                }
+
+                GameObject tempDummy = Instantiate(PassportManager.instance.dummy.gameObject, renderRig.transform, false);
+                tempDummy.transform.localPosition = Vector3.zero;
+                tempDummy.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
+                tempDummy.SetActive(true);
+
+                PlayerCustomizationDummy dummyComp = tempDummy.GetComponent<PlayerCustomizationDummy>();
+                if (dummyComp != null)
+                {
+                    ApplyCustomizationValues(dummyComp, savedPresets[globalIndex]);
+                }
+
+                rigCamera.targetTexture = tempRenderTex;
+                rigCamera.Render();
+
+                RenderTexture prevActive = RenderTexture.active;
+                RenderTexture.active = tempRenderTex;
+                Texture2D newTex = new Texture2D(210, 230, TextureFormat.RGB24, false);
+                newTex.ReadPixels(new Rect(0, 0, 210, 230), 0, 0);
+                newTex.Apply();
+                RenderTexture.active = prevActive;
+
+                thumbnailCache[globalIndex] = newTex;
+                DestroyImmediate(tempDummy);
+
+                UpdateVisiblePortraitIfNeeded(globalIndex, newTex);
+
+                yield return null; // Pauses execution until the next frame. The core fix to the freezing.
+            }
+
+            RestorePlayerLook(originalLook);
+            isRenderingThumbnails = false;
+            
+            // Only destroy if the player has fully closed the menu while it was chewing through the queue
+            if (menuParent == null || !menuParent.activeSelf)
+            {
+                DestroyRenderRig();
+            }
+        }
+
+        private void UpdateVisiblePortraitIfNeeded(int globalIndex, Texture2D tex)
+        {
+            int startIndex = currentPage * SLOTS_PER_PAGE;
+            int endIndex = startIndex + SLOTS_PER_PAGE;
+
+            if (globalIndex >= startIndex && globalIndex < endIndex)
+            {
+                int localIndex = globalIndex - startIndex;
+                if (localIndex >= 0 && localIndex < portraitImages.Count && portraitImages[localIndex] != null)
+                {
+                    portraitImages[localIndex].texture = tex;
+                    portraitImages[localIndex].color = Color.white;
+                }
+            }
         }
 
         private void SetupRenderRig()
@@ -875,143 +1087,39 @@ namespace tinyWardrobe
             }
         }
 
-        private void GenerateAllThumbnailsImmediate()
+        public void ApplyCustomizationValues(PlayerCustomizationDummy dummyComp, OutfitPreset preset)
         {
-            int startIndex = currentPage * SLOTS_PER_PAGE;
-            bool needsRendering = false;
-
-            // Check if there are any un-cached thumbnails on the current page before doing expensive logic
-            for (int i = 0; i < portraitImages.Count; i++)
+            dummyComp.SetPlayerColor(preset.skin);
+            int fitIndex = preset.outfit;
+            dummyComp.SetPlayerCostume(fitIndex);
+            int num = preset.hat;
+            if (Singleton<Customization>.Instance.fits[fitIndex].overrideHat)
             {
-                int globalIndex = startIndex + i;
-                if (globalIndex >= savedPresets.Count) break;
-
-                if (savedPresets[globalIndex].hasData)
-                {
-                    if (!thumbnailCache.TryGetValue(globalIndex, out Texture2D cachedTex) || cachedTex == null)
-                    {
-                        needsRendering = true;
-                        break;
-                    }
-                }
+                num = Singleton<Customization>.Instance.fits[fitIndex].overrideHatIndex;
             }
-
-            OutfitPreset originalLook = new OutfitPreset();
-            bool gotOriginalLook = false;
-
-            if (needsRendering)
+            dummyComp.SetPlayerHat(num);
+            int eyesIndex = preset.eyes;
+            for (int i = 0; i < dummyComp.refs.EyeRenderers.Length; i++)
             {
-                PersistentPlayerData playerData = GameHandler.GetService<PersistentPlayerDataService>()?.GetPlayerData(PhotonNetwork.LocalPlayer);
-                if (playerData != null && playerData.customizationData != null)
-                {
-                    if (playerData.customizationData.currentSkin != 0 ||
-                        playerData.customizationData.currentOutfit != 0 ||
-                        playerData.customizationData.currentHat != 0 ||
-                        playerData.customizationData.currentEyes != 0)
-                    {
-                        originalLook.skin = playerData.customizationData.currentSkin;
-                        originalLook.eyes = playerData.customizationData.currentEyes;
-                        originalLook.mouth = playerData.customizationData.currentMouth;
-                        originalLook.accessory = playerData.customizationData.currentAccessory;
-                        originalLook.outfit = playerData.customizationData.currentOutfit;
-                        originalLook.hat = playerData.customizationData.currentHat;
-                        originalLook.sash = playerData.customizationData.currentSash;
-                        gotOriginalLook = true;
-                    }
-                }
-
-                if (!gotOriginalLook)
-                {
-                    Log.LogWarning("[tinyWardrobe] Local player customization data not ready or uninitialized (0,0,0,0). Proceeding without aborting.");
-                }
-
-                SetupRenderRig();
-                if (tempRenderTex == null) tempRenderTex = new RenderTexture(210, 230, 16);
+                dummyComp.refs.EyeRenderers[i].material.SetTexture(PlayerCustomizationDummy.MainTex, Singleton<Customization>.Instance.eyes[eyesIndex].texture);
             }
-
-            for (int i = 0; i < portraitImages.Count; i++)
+            int accessoryIndex = preset.accessory;
+            dummyComp.refs.accessoryRenderer.material.SetTexture(PlayerCustomizationDummy.MainTex, Singleton<Customization>.Instance.accessories[accessoryIndex].texture);
+            dummyComp.refs.accessoryRenderer.material.renderQueue = (Singleton<Customization>.Instance.accessories[accessoryIndex].drawUnderEye ? 3007 : 3009);
+            dummyComp.refs.accessoryEnabled = !Singleton<Customization>.Instance.accessories[accessoryIndex].isThirdEye;
+            dummyComp.refs.thirdEye.gameObject.SetActive(Singleton<Customization>.Instance.accessories[accessoryIndex].isThirdEye);
+            dummyComp.refs.mouthRenderer.material.SetTexture(PlayerCustomizationDummy.MainTex, Singleton<Customization>.Instance.mouths[preset.mouth].texture);
+            List<Material> list = new List<Material>();
+            list.Add(dummyComp.refs.sashRenderer.materials[0]);
+            int num2 = preset.sash;
+            if (num2 >= dummyComp.refs.sashAscentMaterials.Length)
             {
-                int globalIndex = startIndex + i;
-                if (globalIndex >= savedPresets.Count) break;
-
-                if (!savedPresets[globalIndex].hasData)
-                {
-                    portraitImages[i].texture = null;
-                    portraitImages[i].color = new Color(0.2f, 0.2f, 0.2f, 1f);
-                    continue;
-                }
-
-                if (thumbnailCache.TryGetValue(globalIndex, out Texture2D cachedTex) && cachedTex != null)
-                {
-                    portraitImages[i].texture = cachedTex;
-                    portraitImages[i].color = Color.white;
-                    continue;
-                }
-
-                if (PassportManager.instance == null || PassportManager.instance.dummy == null || rigCamera == null) continue;
-
-                GameObject tempDummy = Instantiate(PassportManager.instance.dummy.gameObject, renderRig.transform, false);
-                tempDummy.transform.localPosition = Vector3.zero;
-                tempDummy.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
-                tempDummy.SetActive(true);
-
-                PlayerCustomizationDummy dummyComp = tempDummy.GetComponent<PlayerCustomizationDummy>();
-                if (dummyComp != null)
-                {
-                    ApplyCustomizationValues(dummyComp, savedPresets[globalIndex]);
-                }
-
-                rigCamera.targetTexture = tempRenderTex;
-                rigCamera.Render();
-
-                // Extract a permanent Texture2D from the temporary RenderTexture
-                RenderTexture prevActive = RenderTexture.active;
-                RenderTexture.active = tempRenderTex;
-                Texture2D newTex = new Texture2D(210, 230, TextureFormat.RGB24, false);
-                newTex.ReadPixels(new Rect(0, 0, 210, 230), 0, 0);
-                newTex.Apply();
-                RenderTexture.active = prevActive;
-
-                thumbnailCache[globalIndex] = newTex;
-                portraitImages[i].texture = newTex;
-                portraitImages[i].color = Color.white;
-
-                DestroyImmediate(tempDummy);
+                num2 = dummyComp.refs.sashAscentMaterials.Length - 1;
             }
-
-            if (needsRendering)
-            {
-                if (rigCamera != null) rigCamera.targetTexture = null;
-
-                CharacterCustomization.SetCharacterSkinColor(originalLook.skin);
-                CharacterCustomization.SetCharacterEyes(originalLook.eyes);
-                CharacterCustomization.SetCharacterMouth(originalLook.mouth);
-                CharacterCustomization.SetCharacterAccessory(originalLook.accessory);
-                CharacterCustomization.SetCharacterOutfit(originalLook.outfit);
-                CharacterCustomization.SetCharacterHat(originalLook.hat);
-                CharacterCustomization.SetCharacterSash(originalLook.sash);
-
-                if (PassportManager.instance != null && PassportManager.instance.dummy != null)
-                {
-                    PassportManager.instance.dummy.UpdateDummy(null);
-                }
-            }
-        }
-
-        private void ApplyCustomizationValues(PlayerCustomizationDummy dummyComp, OutfitPreset preset)
-        {
-            CharacterCustomization.SetCharacterSkinColor(preset.skin);
-            CharacterCustomization.SetCharacterEyes(preset.eyes);
-            CharacterCustomization.SetCharacterMouth(preset.mouth);
-            CharacterCustomization.SetCharacterAccessory(preset.accessory);
-            CharacterCustomization.SetCharacterOutfit(preset.outfit);
-            CharacterCustomization.SetCharacterHat(preset.hat);
-            CharacterCustomization.SetCharacterSash(preset.sash);
-
-            if (dummyComp != null)
-            {
-                dummyComp.UpdateDummy(null);
-            }
+            list.Add(dummyComp.refs.sashAscentMaterials[num2]);
+            int medalIndex = preset.medal;
+            dummyComp.refs.medalRenderer.gameObject.SetActive(medalIndex == 1);
+            dummyComp.refs.sashRenderer.SetMaterials(list);
         }
 
         private void UpdateBorders()
@@ -1043,7 +1151,7 @@ namespace tinyWardrobe
                 string flatBadges = p.badgeData != null ? string.Join("-", System.Array.ConvertAll(p.badgeData, b => b ? "1" : "0")) : "0";
                 string cleanName = string.IsNullOrEmpty(p.customName) ? $"Slot {i + 1}" : p.customName.Replace(",", "").Replace(";", "");
 
-                builder.Append($"{p.skin},{p.eyes},{p.mouth},{p.accessory},{p.outfit},{p.hat},{p.sash},{flatBadges},{(p.hasData ? 1 : 0)},{cleanName}");
+                builder.Append($"{p.skin},{p.eyes},{p.mouth},{p.accessory},{p.outfit},{p.hat},{p.sash},{flatBadges},{p.medal},{(p.hasData ? 1 : 0)},{cleanName}");
                 if (i < savedPresets.Count - 1) builder.Append(";");
             }
 
@@ -1065,7 +1173,7 @@ namespace tinyWardrobe
                     string[] properties = cards[i].Split(',');
                     OutfitPreset preset = new OutfitPreset();
 
-                    if (properties.Length >= 10)
+                    if (properties.Length >= 11)
                     {
                         preset.skin = int.Parse(properties[0]);
                         preset.eyes = int.Parse(properties[1]);
@@ -1077,11 +1185,12 @@ namespace tinyWardrobe
 
                         string[] badgeBits = properties[7].Split('-');
                         preset.badgeData = System.Array.ConvertAll(badgeBits, bit => bit == "1");
+                        preset.medal = int.Parse(properties[8]);
 
-                        preset.hasData = int.Parse(properties[8]) == 1;
+                        preset.hasData = int.Parse(properties[9]) == 1;
                         preset.customName = properties[9];
                     }
-                    else if (properties.Length >= 9)
+                    else if (properties.Length >= 10)
                     {
                         preset.skin = int.Parse(properties[0]);
                         preset.eyes = int.Parse(properties[1]);
