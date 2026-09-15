@@ -43,6 +43,8 @@ namespace tinyWardrobe
         private static Transform listContent;
         public static bool uiOpen = false;
         public static bool wasOpenBeforeMenuClosed = true;
+        private static Coroutine pendingSaveCoroutine;
+        private static HashSet<string> pendingSavePlayers = new HashSet<string>();
 
         private static string BaseDirPath
         {
@@ -106,10 +108,33 @@ namespace tinyWardrobe
             outfitData.nickName = string.IsNullOrEmpty(player.NickName) ? "Unknown Player" : player.NickName;
             outfitData.lastUpdated = DateTime.UtcNow.ToString("o");
 
+            // Update memory immediately
             cacheMap[steamIdStr] = outfitData;
+
+            // Reset timer to wait until the network stream stops
+            if (Plugin.Instance != null)
+            {
+                if (pendingSaveCoroutine != null)
+                {
+                    Plugin.Instance.StopCoroutine(pendingSaveCoroutine);
+                }
+                pendingSaveCoroutine = Plugin.Instance.StartCoroutine(DelayedSaveAndRefresh());
+            }
+        }
+
+        private static System.Collections.IEnumerator DelayedSaveAndRefresh()
+        {
+            // Wait for 0.5 seconds of silence after the last patch event
+            yield return new WaitForSeconds(0.5f);
+
             SaveCache();
 
-            if (uiOpen) RefreshUIList();
+            if (uiOpen)
+            {
+                RefreshUIList();
+            }
+
+            pendingSaveCoroutine = null;
         }
 
         public static void SaveAllLobbyPlayers()
@@ -544,9 +569,15 @@ namespace tinyWardrobe
                 entryBtn.colors = cb;
 
                 SavedOutfitData outfitToEquip = data;
-                entryBtn.onClick.AddListener(() => {
+
+                // Add CustomClickHandler to handle both Left and Right clicks
+                CustomClickHandler clickHandler = entryObj.AddComponent<CustomClickHandler>();
+                clickHandler.OnLeftClick += () => {
                     EquipOutfit(outfitToEquip);
-                });
+                };
+                clickHandler.OnRightClick += () => {
+                    Plugin.Instance?.AddPresetFromSkinSafe(outfitToEquip);
+                };
 
                 GameObject labelObj = new GameObject("Label");
                 RectTransform labelRect = labelObj.AddComponent<RectTransform>();
