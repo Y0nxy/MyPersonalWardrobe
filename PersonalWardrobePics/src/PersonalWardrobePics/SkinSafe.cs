@@ -89,8 +89,7 @@ namespace tinyWardrobe
         public static void CachePlayerOutfit(Photon.Realtime.Player player, SavedOutfitData outfitData)
         {
             EnsureInitialized();
-            if (player == null || outfitData == null) return;
-
+            if (player == null || outfitData == null || player == PhotonNetwork.LocalPlayer) return;
             if (outfitData.skin == 0 && outfitData.eyes == 0 && outfitData.mouth == 0 && outfitData.outfit == 0 && outfitData.hat == 0)
             {
                 return;
@@ -645,7 +644,7 @@ namespace tinyWardrobe
 
             PhotonView view = __instance.GetComponent<PhotonView>();
             Photon.Realtime.Player targetPlayer = (view != null) ? view.Owner : __instance.overridePhotonPlayer;
-            if (targetPlayer == null) return;
+            if (targetPlayer == null || targetPlayer == PhotonNetwork.LocalPlayer) return;
 
             Character targetChar = __instance._character;
             bool[] currentBadges = null;
