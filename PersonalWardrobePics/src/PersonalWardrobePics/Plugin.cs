@@ -618,6 +618,40 @@ namespace tinyWardrobe
             });
 
             slotNameInputs.Add(inputField);
+            if (savedPresets[globalIndex].hasData)
+            {
+                GameObject deleteBtnObj = new GameObject("DeleteButton");
+                RectTransform deleteRect = deleteBtnObj.AddComponent<RectTransform>();
+                deleteRect.SetParent(cardObj.transform, false);
+
+                // Positioned in the top-right corner of the card
+                deleteRect.anchoredPosition = new Vector2(85f, 95f);
+                deleteRect.sizeDelta = new Vector2(24f, 24f);
+
+                Image deleteImg = deleteBtnObj.AddComponent<Image>();
+                deleteImg.color = new Color(0.8f, 0.2f, 0.2f, 0.9f);
+                if (cardSprite != null)
+                {
+                    deleteImg.sprite = cardSprite;
+                    deleteImg.type = Image.Type.Sliced;
+                }
+
+                Button deleteBtn = deleteBtnObj.AddComponent<Button>();
+                int targetSlot = globalIndex;
+                deleteBtn.onClick.AddListener(() => ClearPresetSlot(targetSlot));
+
+                GameObject deleteTxtObj = new GameObject("XText");
+                RectTransform deleteTxtRect = deleteTxtObj.AddComponent<RectTransform>();
+                deleteTxtRect.SetParent(deleteBtnObj.transform, false);
+                StretchToFill(deleteTxtRect);
+
+                TextMeshProUGUI deleteTxt = deleteTxtObj.AddComponent<TextMeshProUGUI>();
+                deleteTxt.text = "X";
+                deleteTxt.fontSize = 14;
+                deleteTxt.font = GetFont();
+                deleteTxt.alignment = TextAlignmentOptions.Center;
+                deleteTxt.color = Color.white;
+            }
         }
 
         private void CreatePlayerSelectionMenu(Transform parent)
@@ -823,6 +857,42 @@ namespace tinyWardrobe
             RenderCurrentPage();
             Log.LogInfo($"Successfully cloned and saved {targetPlayer.NickName}'s appearance layout into Slot {slotIndex + 1}!");
         }
+        public void AddPresetFromSkinSafe(SkinSafe.SavedOutfitData data)
+        {
+            if (data == null) return;
+
+            OutfitPreset newPreset = new OutfitPreset
+            {
+                customName = string.IsNullOrEmpty(data.nickName) ? "Saved Outfit" : data.nickName,
+                skin = data.skin,
+                eyes = data.eyes,
+                mouth = data.mouth,
+                accessory = data.accessory,
+                outfit = data.outfit,
+                hat = data.hat,
+                sash = data.sash,
+                badgeData = data.badgeData != null ? (bool[])data.badgeData.Clone() : new bool[0],
+                hasData = true
+            };
+
+            // Find the first empty slot or append a new one
+            int targetIndex = savedPresets.FindIndex(p => !p.hasData);
+            if (targetIndex != -1)
+            {
+                savedPresets[targetIndex] = newPreset;
+            }
+            else
+            {
+                targetIndex = savedPresets.Count;
+                savedPresets.Add(newPreset);
+            }
+
+            InvalidateThumbnailCache(targetIndex);
+            CheckAndExpandSlots(targetIndex);
+            SavePresetsToConfig();
+            RenderCurrentPage();
+            Log.LogInfo($"Added '{newPreset.customName}' from SkinSafe into Slot {targetIndex + 1}!");
+        }
 
         private void SaveCurrentOutfitToPreset(int index)
         {
@@ -906,6 +976,9 @@ namespace tinyWardrobe
             }
             return originalLook;
         }
+        private void ClearPresetSlot(int index)
+        {
+            if (index < 0 || index >= savedPresets.Count) return;
 
         private void RestorePlayerLook(OutfitPreset look)
         {
@@ -1121,6 +1194,7 @@ namespace tinyWardrobe
             dummyComp.refs.medalRenderer.gameObject.SetActive(medalIndex == 1);
             dummyComp.refs.sashRenderer.SetMaterials(list);
         }
+
 
         private void UpdateBorders()
         {
