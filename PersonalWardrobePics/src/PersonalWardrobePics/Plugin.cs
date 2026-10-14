@@ -3,12 +3,10 @@ using BepInEx.Configuration;
 using BepInEx.Logging;
 using HarmonyLib;
 using Photon.Pun;
-using Photon.Realtime;
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Text;
-using TextChatCommands;
 using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -108,7 +106,7 @@ namespace tinyWardrobe
             savedPresetsConfig = Config.Bind("General", "SavedPresetsDataList_Pages", "", "Flat list representation containing saved outfit presets data.");
             LoadPresetsFromConfig();
 
-            EnsureMinimumSlots(SLOTS_PER_PAGE);
+            NormalizeSlots();
 
             cardSprite = GenerateProceduralRoundedSprite(256, 256, CornerRadius);
             maskSprite = GenerateProceduralRoundedSprite(256, 256, CornerRadius);
@@ -181,6 +179,8 @@ namespace tinyWardrobe
 
         private void Update()
         {
+            TickCardDrag();
+
             bool pressedEsc = Input.GetKeyDown(KeyCode.Escape);
             if (!Input.GetKeyDown(toggleKeyConfig.Value) && !pressedEsc)
                 return;
@@ -224,7 +224,7 @@ namespace tinyWardrobe
                 Cursor.lockState = CursorLockMode.None;
                 Cursor.visible = true;
                 blockInput = true;
-                
+
                 RenderCurrentPage();
 
                 // Start background loading of all textures on first open
@@ -261,6 +261,7 @@ namespace tinyWardrobe
                 Cursor.visible = false;
                 isTyping = false;
                 blockInput = false;
+                CancelCardDrag();
 
                 // Don't destroy the render rig if it's currently processing thumbnails in the background
                 if (!isRenderingThumbnails)
@@ -403,7 +404,7 @@ namespace tinyWardrobe
             navRect.anchoredPosition = new Vector2(0, -380);
             navRect.sizeDelta = new Vector2(600, 50);
 
-            CreateButton(navPanel.transform, "< PREV", new Vector2(-150, 0), new Vector2(120, 40), () => {
+            prevButtonObj = CreateButton(navPanel.transform, "< PREV", new Vector2(-150, 0), new Vector2(120, 40), () => {
                 if (currentPage > 0)
                 {
                     currentPage--;
@@ -423,7 +424,7 @@ namespace tinyWardrobe
             pageIndicatorText.font = GetFont();
             pageIndicatorText.color = Color.white;
 
-            CreateButton(navPanel.transform, "NEXT >", new Vector2(150, 0), new Vector2(120, 40), () => {
+            nextButtonObj = CreateButton(navPanel.transform, "NEXT >", new Vector2(150, 0), new Vector2(120, 40), () => {
                 int maxPages = Mathf.CeilToInt((float)savedPresets.Count / SLOTS_PER_PAGE);
                 if (currentPage < maxPages - 1)
                 {
@@ -549,6 +550,12 @@ namespace tinyWardrobe
                 OpenPlayerSelectionMenu(globalIndex);
             };
 
+            CardDragHandler dragHandler = cardObj.AddComponent<CardDragHandler>();
+            dragHandler.globalIndex = globalIndex;
+            dragHandler.OnDragBegin += (e) => BeginCardDrag(globalIndex, localIndex, e);
+            dragHandler.OnDragMove += (e) => UpdateCardDrag(e);
+            dragHandler.OnDragEnd += (e) => EndCardDrag(e);
+
             GameObject maskObj = new GameObject("PortraitMask");
             RectTransform maskRect = maskObj.AddComponent<RectTransform>();
             maskRect.SetParent(cardObj.transform, false);
@@ -624,17 +631,17 @@ namespace tinyWardrobe
                 RectTransform deleteRect = deleteBtnObj.AddComponent<RectTransform>();
                 deleteRect.SetParent(cardObj.transform, false);
 
-                // Positioned in the top-right corner of the card
-                deleteRect.anchoredPosition = new Vector2(85f, 95f);
-                deleteRect.sizeDelta = new Vector2(24f, 24f);
+                // Pinned to the very top-right corner of the card
+                deleteRect.anchorMin = new Vector2(1f, 1f);
+                deleteRect.anchorMax = new Vector2(1f, 1f);
+                deleteRect.pivot = new Vector2(1f, 1f);
+                deleteRect.anchoredPosition = new Vector2(-4f, -2f);
+                deleteRect.sizeDelta = new Vector2(30f, 30f);
 
+                // Fully transparent image: no visible background, but still gives the button a click area
                 Image deleteImg = deleteBtnObj.AddComponent<Image>();
-                deleteImg.color = new Color(0.8f, 0.2f, 0.2f, 0.9f);
-                if (cardSprite != null)
-                {
-                    deleteImg.sprite = cardSprite;
-                    deleteImg.type = Image.Type.Sliced;
-                }
+                deleteImg.color = new Color(0f, 0f, 0f, 0f);
+                deleteImg.raycastTarget = true;
 
                 Button deleteBtn = deleteBtnObj.AddComponent<Button>();
                 int targetSlot = globalIndex;
@@ -647,10 +654,12 @@ namespace tinyWardrobe
 
                 TextMeshProUGUI deleteTxt = deleteTxtObj.AddComponent<TextMeshProUGUI>();
                 deleteTxt.text = "X";
-                deleteTxt.fontSize = 14;
+                deleteTxt.fontSize = 24;
                 deleteTxt.font = GetFont();
+                deleteTxt.fontStyle = FontStyles.Bold;
                 deleteTxt.alignment = TextAlignmentOptions.Center;
-                deleteTxt.color = Color.white;
+                deleteTxt.color = new Color(0.9f, 0.1f, 0.1f, 1f);
+                deleteTxt.raycastTarget = false;
             }
         }
 
@@ -980,6 +989,262 @@ namespace tinyWardrobe
         {
             if (index < 0 || index >= savedPresets.Count) return;
 
+            // Remove the slot entirely so everything after it moves up
+            savedPresets.RemoveAt(index);
+            RemapThumbnailCache(k => k == index ? -1 : (k > index ? k - 1 : k));
+
+            if (selectedLoadout == index) selectedLoadout = -1;
+            else if (selectedLoadout > index) selectedLoadout--;
+
+            NormalizeSlots();
+            SavePresetsToConfig();
+            RenderCurrentPage();
+            Log.LogInfo($"Deleted slot {index + 1}");
+        }
+
+        // Keeps exactly enough slots for the data plus one spare empty slot (padded to full pages),
+        // and renumbers default "Slot N" names so they match their position.
+        private void NormalizeSlots()
+        {
+            // Remove every page that has no data at all (the spare page is re-added below only if needed)
+            for (int pageStart = ((savedPresets.Count - 1) / SLOTS_PER_PAGE) * SLOTS_PER_PAGE; pageStart >= 0; pageStart -= SLOTS_PER_PAGE)
+            {
+                int count = Mathf.Min(SLOTS_PER_PAGE, savedPresets.Count - pageStart);
+                bool hasAny = false;
+                for (int i = pageStart; i < pageStart + count; i++)
+                {
+                    if (savedPresets[i].hasData) { hasAny = true; break; }
+                }
+                if (hasAny) continue;
+
+                int start = pageStart;
+                int removed = count;
+                savedPresets.RemoveRange(start, removed);
+                RemapThumbnailCache(k => (k >= start && k < start + removed) ? -1 : (k >= start + removed ? k - removed : k));
+                if (selectedLoadout >= start + removed) selectedLoadout -= removed;
+                else if (selectedLoadout >= start) selectedLoadout = -1;
+            }
+
+            int lastData = -1;
+            for (int i = 0; i < savedPresets.Count; i++)
+            {
+                if (savedPresets[i].hasData) lastData = i;
+            }
+
+            int required = Mathf.Max(SLOTS_PER_PAGE, ((lastData + 2 + SLOTS_PER_PAGE - 1) / SLOTS_PER_PAGE) * SLOTS_PER_PAGE);
+            if (savedPresets.Count > required)
+                savedPresets.RemoveRange(required, savedPresets.Count - required);
+            EnsureMinimumSlots(required);
+
+            for (int i = 0; i < savedPresets.Count; i++)
+            {
+                string n = savedPresets[i].customName;
+                bool isDefault = string.IsNullOrEmpty(n) || (n.StartsWith("Slot ") && int.TryParse(n.Substring(5), out _));
+                if (isDefault) savedPresets[i].customName = $"Slot {i + 1}";
+            }
+        }
+
+        // map returns the new index for a cached thumbnail, or -1 to discard it
+        private void RemapThumbnailCache(Func<int, int> map)
+        {
+            Dictionary<int, Texture2D> newCache = new Dictionary<int, Texture2D>();
+            foreach (var kvp in thumbnailCache)
+            {
+                int newKey = map(kvp.Key);
+                if (newKey < 0)
+                {
+                    if (kvp.Value != null) Destroy(kvp.Value);
+                }
+                else
+                {
+                    newCache[newKey] = kvp.Value;
+                }
+            }
+            thumbnailCache = newCache;
+            thumbnailRenderQueue.Clear();
+        }
+
+        // --- DRAG TO REORDER ---
+
+        private GameObject dragGhost;
+        private int dragFromIndex = -1;
+
+        private void BeginCardDrag(int globalIndex, int localIndex, PointerEventData e)
+        {
+            dragFromIndex = -1;
+            if (e.button != PointerEventData.InputButton.Left) return;
+            if (globalIndex < 0 || globalIndex >= savedPresets.Count || !savedPresets[globalIndex].hasData) return;
+            if (localIndex < slotNameInputs.Count && slotNameInputs[localIndex] != null && slotNameInputs[localIndex].isFocused) return;
+
+            dragFromIndex = globalIndex;
+            dragHoverDir = 0;
+            dragFlipTimer = 0f;
+
+            dragGhost = new GameObject("DragGhost");
+            dragGhost.layer = 5;
+            RectTransform r = dragGhost.AddComponent<RectTransform>();
+            r.SetParent(menuParent.transform, false);
+            r.sizeDelta = new Vector2(150f, 165f);
+
+            RawImage img = dragGhost.AddComponent<RawImage>();
+            img.raycastTarget = false;
+            if (localIndex < portraitImages.Count && portraitImages[localIndex] != null)
+            {
+                img.texture = portraitImages[localIndex].texture;
+                img.color = portraitImages[localIndex].color * new Color(1f, 1f, 1f, 0.85f);
+            }
+
+            r.SetAsLastSibling();
+            r.position = e.position;
+        }
+
+        private void UpdateCardDrag(PointerEventData e)
+        {
+            if (dragGhost != null) dragGhost.transform.position = e.position;
+        }
+
+        private float dragFlipTimer = 0f;
+        private int dragHoverDir = 0;
+        private GameObject prevButtonObj;
+        private GameObject nextButtonObj;
+
+        private void EndCardDrag(PointerEventData e)
+        {
+            FinishCardDrag(e.position);
+        }
+
+        // Runs every frame from Update while a drag is active. The card that started the drag can be
+        // destroyed when the page flips, so its own drag events can't be relied on to finish the drag.
+        private void TickCardDrag()
+        {
+            if (dragFromIndex < 0) return;
+
+            Vector2 pos = Input.mousePosition;
+            if (dragGhost != null) dragGhost.transform.position = pos;
+
+            if (!Input.GetMouseButton(0))
+            {
+                FinishCardDrag(pos);
+                return;
+            }
+
+            // Hover PREV / NEXT to flip pages: instant on entering the button,
+            // then again only after leaving and re-entering, or after 1.5s of staying on it
+            int dir = IsOverButton(prevButtonObj, pos) ? -1 : (IsOverButton(nextButtonObj, pos) ? 1 : 0);
+
+            if (dir == 0)
+            {
+                dragHoverDir = 0;
+                dragFlipTimer = 0f;
+                return;
+            }
+
+            if (dir != dragHoverDir)
+            {
+                dragHoverDir = dir;
+                dragFlipTimer = 0f;
+                FlipPageDuringDrag(dir);
+                return;
+            }
+
+            dragFlipTimer += Time.unscaledDeltaTime;
+            if (dragFlipTimer >= 1.5f)
+            {
+                dragFlipTimer = 0f;
+                FlipPageDuringDrag(dir);
+            }
+        }
+
+        private bool IsOverButton(GameObject btn, Vector2 screenPos)
+        {
+            if (btn == null) return false;
+            RectTransform rt = btn.transform as RectTransform;
+            return rt != null && RectTransformUtility.RectangleContainsScreenPoint(rt, screenPos, null);
+        }
+
+        private void FlipPageDuringDrag(int dir)
+        {
+            int totalPages = Mathf.Max(1, Mathf.CeilToInt((float)savedPresets.Count / SLOTS_PER_PAGE));
+            int newPage = Mathf.Clamp(currentPage + dir, 0, totalPages - 1);
+            if (newPage != currentPage)
+            {
+                currentPage = newPage;
+                RenderCurrentPage();
+            }
+        }
+
+        private void FinishCardDrag(Vector2 pos)
+        {
+            if (dragGhost != null) { Destroy(dragGhost); dragGhost = null; }
+            dragFlipTimer = 0f;
+            if (dragFromIndex < 0) return;
+
+            int from = dragFromIndex;
+            dragFromIndex = -1;
+
+            int target = -1;
+            if (EventSystem.current != null)
+            {
+                List<RaycastResult> results = new List<RaycastResult>();
+                PointerEventData ped = new PointerEventData(EventSystem.current) { position = pos };
+                EventSystem.current.RaycastAll(ped, results);
+                foreach (RaycastResult res in results)
+                {
+                    CardDragHandler h = res.gameObject.GetComponentInParent<CardDragHandler>();
+                    if (h != null) { target = h.globalIndex; break; }
+                }
+            }
+
+            if (target >= 0 && target != from) MoveSlot(from, target);
+        }
+
+        private void CancelCardDrag()
+        {
+            if (dragGhost != null) { Destroy(dragGhost); dragGhost = null; }
+            dragFromIndex = -1;
+        }
+
+        private void MoveSlot(int from, int to)
+        {
+            if (from == to || from < 0 || to < 0 || from >= savedPresets.Count || to >= savedPresets.Count) return;
+
+            bool targetHasData = savedPresets[to].hasData;
+            OutfitPreset item = savedPresets[from];
+            savedPresets.RemoveAt(from);
+
+            int ins;
+            if (targetHasData)
+            {
+                ins = to;
+            }
+            else
+            {
+                // Dropped on an empty slot: put it right after the last real preset so no gaps appear
+                int lastData = -1;
+                for (int i = 0; i < savedPresets.Count; i++)
+                {
+                    if (savedPresets[i].hasData) lastData = i;
+                }
+                ins = lastData + 1;
+            }
+            ins = Mathf.Clamp(ins, 0, savedPresets.Count);
+            savedPresets.Insert(ins, item);
+
+            Func<int, int> map = k =>
+            {
+                if (k == from) return ins;
+                int kk = k > from ? k - 1 : k;
+                return kk >= ins ? kk + 1 : kk;
+            };
+            RemapThumbnailCache(map);
+            if (selectedLoadout >= 0) selectedLoadout = map(selectedLoadout);
+
+            NormalizeSlots();
+            SavePresetsToConfig();
+            RenderCurrentPage();
+            Log.LogInfo($"Moved slot {from + 1} to slot {ins + 1}");
+        }
+
         private void RestorePlayerLook(OutfitPreset look)
         {
             if (!look.hasData) return;
@@ -1053,14 +1318,14 @@ namespace tinyWardrobe
             while (thumbnailRenderQueue.Count > 0)
             {
                 int globalIndex = thumbnailRenderQueue.Dequeue();
-                
+
                 if (globalIndex < 0 || globalIndex >= savedPresets.Count || !savedPresets[globalIndex].hasData)
                     continue;
 
                 // Stop generating if the local player goes missing (e.g. disconnected)
                 if (PassportManager.instance == null || PassportManager.instance.dummy == null || rigCamera == null)
                 {
-                    yield return null; 
+                    yield return null;
                     continue;
                 }
 
@@ -1095,7 +1360,7 @@ namespace tinyWardrobe
 
             RestorePlayerLook(originalLook);
             isRenderingThumbnails = false;
-            
+
             // Only destroy if the player has fully closed the menu while it was chewing through the queue
             if (menuParent == null || !menuParent.activeSelf)
             {
@@ -1262,7 +1527,7 @@ namespace tinyWardrobe
                         preset.medal = int.Parse(properties[8]);
 
                         preset.hasData = int.Parse(properties[9]) == 1;
-                        preset.customName = properties[9];
+                        preset.customName = string.IsNullOrWhiteSpace(properties[10]) ? $"Slot {i + 1}" : properties[10];
                     }
                     else if (properties.Length >= 10)
                     {
@@ -1289,6 +1554,18 @@ namespace tinyWardrobe
                 Log.LogError($"Error parsing list config fields: {ex.Message}");
             }
         }
+    }
+
+    public class CardDragHandler : MonoBehaviour, IBeginDragHandler, IDragHandler, IEndDragHandler
+    {
+        public int globalIndex;
+        public System.Action<PointerEventData> OnDragBegin;
+        public System.Action<PointerEventData> OnDragMove;
+        public System.Action<PointerEventData> OnDragEnd;
+
+        public void OnBeginDrag(PointerEventData eventData) { OnDragBegin?.Invoke(eventData); }
+        public void OnDrag(PointerEventData eventData) { OnDragMove?.Invoke(eventData); }
+        public void OnEndDrag(PointerEventData eventData) { OnDragEnd?.Invoke(eventData); }
     }
 
     public class CustomClickHandler : MonoBehaviour, IPointerClickHandler
