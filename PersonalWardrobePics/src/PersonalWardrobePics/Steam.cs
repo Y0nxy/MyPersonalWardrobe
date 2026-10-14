@@ -1,9 +1,5 @@
 ﻿using Photon.Pun;
 using Steamworks;
-using System;
-using System.Collections.Generic;
-using System.Text;
-using Photon.Realtime;
 
 namespace TextChatCommands
 {
